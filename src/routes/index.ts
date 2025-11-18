@@ -6,7 +6,7 @@ import { logger } from '../utils/logger';
 import { config } from '../utils/config';
 import { OutboundCallRequest, OutboundCallResponse, ErrorResponse, N8nConfigRequest } from '../types';
 
-const router = Router();
+const router: Router = Router();
 
 /**
  * Health check endpoint
