@@ -472,6 +472,38 @@ export class MediaStreamHandler {
       () => streamSid,
       markQueue
     );
+    let openaiReadyForInitialResponse = false;
+    let twilioReadyForInitialResponse = false;
+    let initialResponseTriggered = false;
+
+    const triggerInitialAssistantResponse = (): void => {
+      if (
+        initialResponseTriggered ||
+        !openaiReadyForInitialResponse ||
+        !twilioReadyForInitialResponse
+      ) {
+        return;
+      }
+
+      if (openaiWs.readyState !== WebSocket.OPEN) {
+        logger.debug('OpenAI WebSocket not ready to trigger initial response');
+        return;
+      }
+
+      const responseCreate = {
+        type: 'response.create',
+      };
+
+      openaiWs.send(JSON.stringify(responseCreate), (error) => {
+        if (error) {
+          logger.error('Failed to trigger initial assistant response', error);
+          return;
+        }
+
+        initialResponseTriggered = true;
+        logger.info('Initial assistant response triggered automatically');
+      });
+    };
 
     // Setup OpenAI WebSocket handlers
     openaiWs.on('open', async () => {
@@ -482,6 +514,9 @@ export class MediaStreamHandler {
         await openaiService.sendSessionUpdate(openaiWs, callConfig);
       } catch (error) {
         logger.error('Failed to initialize OpenAI session', error);
+      } finally {
+        openaiReadyForInitialResponse = true;
+        triggerInitialAssistantResponse();
       }
     });
 
@@ -723,6 +758,10 @@ export class MediaStreamHandler {
           case 'start':
             streamSid = message.start?.streamSid || null;
             logger.info('Twilio stream started', { streamSid });
+            if (streamSid) {
+              twilioReadyForInitialResponse = true;
+              triggerInitialAssistantResponse();
+            }
             break;
 
           case 'media':
@@ -816,6 +855,39 @@ export class MediaStreamHandler {
       () => streamSid,
       markQueue
     );
+    let openaiReadyForInitialResponse = false;
+    let twilioReadyForInitialResponse = false;
+    let initialResponseTriggered = false;
+
+    const triggerInitialAssistantResponse = (): void => {
+      if (
+        initialResponseTriggered ||
+        !openaiReadyForInitialResponse ||
+        !twilioReadyForInitialResponse ||
+        !openaiWs
+      ) {
+        return;
+      }
+
+      if (openaiWs.readyState !== WebSocket.OPEN) {
+        logger.debug('OpenAI WebSocket not ready to trigger initial response (lazy path)');
+        return;
+      }
+
+      const responseCreate = {
+        type: 'response.create',
+      };
+
+      openaiWs.send(JSON.stringify(responseCreate), (error) => {
+        if (error) {
+          logger.error('Failed to trigger initial assistant response (lazy path)', error);
+          return;
+        }
+
+        initialResponseTriggered = true;
+        logger.info('Initial assistant response triggered automatically (lazy path)');
+      });
+    };
 
     const initOpenAI = async () => {
       if (!callConfig || !twilioCallSid) return;
@@ -828,6 +900,9 @@ export class MediaStreamHandler {
           await openaiService.sendSessionUpdate(openaiWs as WebSocket, callConfig as CallConfig);
         } catch (error) {
           logger.error('Failed to initialize OpenAI session', error);
+        } finally {
+          openaiReadyForInitialResponse = true;
+          triggerInitialAssistantResponse();
         }
       });
 
@@ -1057,6 +1132,10 @@ export class MediaStreamHandler {
               logger.error('Missing callSid in Twilio start event');
               twilioWs.close();
               return;
+            }
+            if (streamSid) {
+              twilioReadyForInitialResponse = true;
+              triggerInitialAssistantResponse();
             }
 
             if (dir === 'outbound') {
