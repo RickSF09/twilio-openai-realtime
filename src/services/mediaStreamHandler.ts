@@ -44,7 +44,7 @@ class TwilioAudioPlayout {
 
   private static readonly FRAME_DURATION_MS = 20;
   private static readonly FRAME_SIZE_BYTES = 160;
-  private static readonly INITIAL_FRAMES = 10;
+  private static readonly INITIAL_FRAMES = 3;
   private static readonly MARK_INTERVAL_MS = 200;
   private static readonly MAX_PENDING_MARKS = 3;
 
@@ -62,7 +62,8 @@ class TwilioAudioPlayout {
     const chunk = Buffer.from(base64Payload, 'base64');
     this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]);
     this.pendingDrain = false;
-    this.startTimerIfReady(this.streamingStarted);
+    const shouldForceStart = !this.streamingStarted;
+    this.startTimerIfReady(shouldForceStart);
   }
 
   notifyResponseFinished(): void {

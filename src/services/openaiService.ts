@@ -60,6 +60,7 @@ export class OpenAIRealtimeService {
           transcription: null,
           turn_detection: callConfig.turn_detection || {
             type: 'semantic_vad',
+            eagerness: 'high',
           },
         },
         output: {
