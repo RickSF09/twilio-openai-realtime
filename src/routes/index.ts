@@ -166,6 +166,10 @@ router.post('/outbound-call', async (req: Request, res: Response) => {
       websocketUrl,
       tempId
     );
+    // Ensure outbound call is recorded in dual-channel mode
+    twilioService.startRecording(callSid).catch((err) => {
+      logger.error('Failed to start recording for outbound call', err);
+    });
 
     const response: OutboundCallResponse = {
       success: true,

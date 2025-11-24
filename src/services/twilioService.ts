@@ -30,7 +30,8 @@ export class TwilioService {
         to,
         from: fromNumber,
         twiml: this.generateOutboundTwiML(websocketUrl, tempId),
-        record: true, // Enable call recording
+        // record: true, // Disable auto-record to allow manual dual-channel start
+        // recordingChannels: 'dual',
       });
 
       logger.info('Outbound call initiated', { 
