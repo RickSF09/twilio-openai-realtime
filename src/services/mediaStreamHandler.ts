@@ -5,6 +5,7 @@ import { config } from '../utils/config';
 import { openaiService } from './openaiService';
 import { n8nService } from './n8nService';
 import { sessionManager } from './sessionManager';
+import { twilioService } from './twilioService';
 import { 
   TwilioMediaEvent, 
   OpenAIRealtimeEvent, 
@@ -757,10 +758,19 @@ export class MediaStreamHandler {
         switch (message.event) {
           case 'start':
             streamSid = message.start?.streamSid || null;
-            logger.info('Twilio stream started', { streamSid });
+            const realCallSid = message.start?.callSid;
+            logger.info('Twilio stream started', { streamSid, callSid: realCallSid });
+            
             if (streamSid) {
               twilioReadyForInitialResponse = true;
               triggerInitialAssistantResponse();
+            }
+
+            // Start recording for outbound calls when stream starts (call is answered)
+            if (direction === 'outbound' && realCallSid) {
+              twilioService.startRecording(realCallSid).catch((error) => {
+                logger.error('Failed to start recording on stream start', error);
+              });
             }
             break;
 
@@ -1161,6 +1171,11 @@ export class MediaStreamHandler {
                 from,
                 to
               );
+
+              // Start recording now that the outbound stream is live
+              twilioService.startRecording(twilioCallSid).catch((error) => {
+                logger.error('Failed to start recording on stream start (lazy path)', error);
+              });
             } else {
               // Inbound call - extract from/to from customParameters
               from = params['from'];
