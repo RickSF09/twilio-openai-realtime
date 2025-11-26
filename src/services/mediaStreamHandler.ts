@@ -515,10 +515,11 @@ export class MediaStreamHandler {
         await openaiService.sendSessionUpdate(openaiWs, callConfig);
       } catch (error) {
         logger.error('Failed to initialize OpenAI session', error);
-      } finally {
-        openaiReadyForInitialResponse = true;
-        triggerInitialAssistantResponse();
       }
+      // NOTE: We intentionally do NOT mark OpenAI as "ready" here.
+      // We wait for the explicit `session.created` event from OpenAI
+      // before triggering the initial assistant response, to ensure
+      // the session configuration has been fully applied.
     });
 
     openaiWs.on('message', async (data: WebSocket.Data) => {
@@ -680,12 +681,18 @@ export class MediaStreamHandler {
           }
         }
 
-        // Extract conversation ID from session.created
-        if (event.type === 'session.created' && event.session?.id) {
-          sessionManager.updateOpenAIConversationId(
-            twilioCallSid,
-            event.session.id
-          );
+        // Extract conversation ID from session.created and trigger initial response
+        if (event.type === 'session.created') {
+          if (event.session?.id) {
+            sessionManager.updateOpenAIConversationId(
+              twilioCallSid,
+              event.session.id
+            );
+          }
+
+          // Only now consider OpenAI "ready" for the first response
+          openaiReadyForInitialResponse = true;
+          triggerInitialAssistantResponse();
         }
 
         // Send audio delta to Twilio
@@ -910,10 +917,9 @@ export class MediaStreamHandler {
           await openaiService.sendSessionUpdate(openaiWs as WebSocket, callConfig as CallConfig);
         } catch (error) {
           logger.error('Failed to initialize OpenAI session', error);
-        } finally {
-          openaiReadyForInitialResponse = true;
-          triggerInitialAssistantResponse();
         }
+        // As in the non-lazy path, wait for `session.created` before
+        // treating OpenAI as ready for the first response.
       });
 
       openaiWs.on('message', async (data: WebSocket.Data) => {
@@ -1074,11 +1080,16 @@ export class MediaStreamHandler {
               pendingFunctionCalls.delete(item.id);
             }
           }
-          if (event.type === 'session.created' && event.session?.id) {
-            sessionManager.updateOpenAIConversationId(
-              twilioCallSid as string,
-              event.session.id
-            );
+          if (event.type === 'session.created') {
+            if (event.session?.id) {
+              sessionManager.updateOpenAIConversationId(
+                twilioCallSid as string,
+                event.session.id
+              );
+            }
+
+            openaiReadyForInitialResponse = true;
+            triggerInitialAssistantResponse();
           }
           if (event.type === 'response.output_audio.delta' && event.delta) {
             audioPlayout.enqueue(event.delta);
