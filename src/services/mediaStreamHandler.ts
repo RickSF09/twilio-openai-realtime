@@ -362,7 +362,7 @@ function recordTokenUsage(
   };
 }
 
-async function executeHangupCall(
+async function  (
   state: FunctionCallState,
   context: FunctionCallContext
 ): Promise<void> {

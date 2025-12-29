@@ -7,7 +7,7 @@ import { CallConfig, OpenAISessionConfig, ToolConfig } from '../types';
 const HANGUP_CALL_TOOL: ToolConfig = {
   type: 'function',
   name: 'hangup_call',
-  description: 'End the active call when the caller or agent indicates the conversation is finished.',
+  description: 'End the active call when the caller or agent indicates the conversation is finished Or immediatly when you reached the voicemail',
   parameters: {
     type: 'object',
     properties: {},
