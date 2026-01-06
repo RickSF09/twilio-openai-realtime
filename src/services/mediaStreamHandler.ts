@@ -362,7 +362,7 @@ function recordTokenUsage(
   };
 }
 
-async function  (
+async function executeHangupCall(
   state: FunctionCallState,
   context: FunctionCallContext
 ): Promise<void> {
@@ -525,6 +525,15 @@ export class MediaStreamHandler {
     openaiWs.on('message', async (data: WebSocket.Data) => {
       try {
         const event: OpenAIRealtimeEvent = JSON.parse(data.toString());
+
+        // Log conversation item additions for debugging
+        if (event.type === 'conversation.item.added' && event.item) {
+          logger.info('item added', { 
+            role: event.item.role, 
+            type: event.item.type,
+            id: event.item.id,
+          });
+        }
 
         // Log important events
         const logEvents = [
@@ -707,9 +716,12 @@ export class MediaStreamHandler {
 
         if (event.type === 'response.output_audio.done') {
           audioPlayout.notifyResponseFinished();
+          // Reset tracking - response is complete, nothing to truncate
+          lastAssistantItem = null;
+          responseStartTimestamp = null;
         }
 
-        // Handle interruption
+        // Handle interruption (only if response is still in progress)
         if (event.type === 'input_audio_buffer.speech_started') {
           logger.debug('User speech started - handling interruption');
           
@@ -925,11 +937,20 @@ export class MediaStreamHandler {
       openaiWs.on('message', async (data: WebSocket.Data) => {
         try {
           const event: OpenAIRealtimeEvent = JSON.parse(data.toString());
+
+          // Log conversation item additions for debugging
+          if (event.type === 'conversation.item.added' && event.item) {
+            logger.info('item added', { 
+              role: event.item.role, 
+              type: event.item.type,
+              id: event.item.id,
+            });
+          }
+
           const logEvents = [
             'error',
             'session.created',
             'session.updated',
-            'response.created',
             'response.done',
             'input_audio_buffer.speech_started',
             'input_audio_buffer.speech_stopped',
@@ -952,9 +973,6 @@ export class MediaStreamHandler {
           }
 
 
-          if (event.type === 'response.created' || event.type === 'response.output_audio.delta') {
-            // no special handling required in lazy path for now
-          }
           if (event.type === 'response.function_call_arguments.delta') {
             const itemId = event.item_id;
             if (itemId) {
@@ -1100,6 +1118,9 @@ export class MediaStreamHandler {
           }
           if (event.type === 'response.output_audio.done') {
             audioPlayout.notifyResponseFinished();
+            // Reset tracking - response is complete, nothing to truncate
+            lastAssistantItem = null;
+            responseStartTimestamp = null;
           }
           if (event.type === 'input_audio_buffer.speech_started') {
             logger.debug('User speech started - handling interruption');
