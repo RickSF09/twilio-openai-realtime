@@ -650,7 +650,7 @@ export class MediaStreamHandler {
           const instructions = [
             'You have just finished using a tool to gather information.',
             'Share the results with the caller in a friendly, conversational way.',
-            'Be concise and natural.',
+            'Be concise and natural, speak with a british accent',
           ].join('\n');
 
           const responseCreate = {
