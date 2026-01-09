@@ -5,7 +5,7 @@ export interface TurnDetectionConfig {
   threshold?: number;
   prefix_padding_ms?: number;
   silence_duration_ms?: number;
-  eagerness?: 'low' | 'medium' | 'high';
+  eagerness?: 'low' | 'medium' | 'high' | 'auto';
   // semantic_vad may support different/extra fields; keep open for forward compatibility
   [key: string]: any;
 }
