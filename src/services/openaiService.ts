@@ -181,6 +181,23 @@ export class OpenAIRealtimeService {
   }
 
   /**
+   * Clear the input audio buffer
+   * Used to discard any buffered user audio (e.g., soft acknowledgments during AI speech)
+   */
+  clearInputAudioBuffer(ws: WebSocket): void {
+    if (ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    const clearEvent = {
+      type: 'input_audio_buffer.clear',
+    };
+
+    logger.debug('Clearing input audio buffer');
+    ws.send(JSON.stringify(clearEvent));
+  }
+
+  /**
    * Request OpenAI to hang up an active call
    */
   async hangupCall(callId: string): Promise<void> {

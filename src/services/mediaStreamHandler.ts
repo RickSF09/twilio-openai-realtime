@@ -465,6 +465,7 @@ export class MediaStreamHandler {
     let latestMediaTimestamp = 0;
     let lastAssistantItem: string | null = null;
     let responseStartTimestamp: number | null = null;
+    let responseAudioDone = false; // Tracks if OpenAI finished generating audio (but may still be playing)
     const markQueue: string[] = [];
     const executedFunctionCalls: ToolCallPayload[] = [];
     const pendingFunctionCalls = new Map<string, FunctionCallState>();
@@ -716,9 +717,14 @@ export class MediaStreamHandler {
 
         if (event.type === 'response.output_audio.done') {
           audioPlayout.notifyResponseFinished();
-          // Reset tracking - response is complete, nothing to truncate
-          lastAssistantItem = null;
-          responseStartTimestamp = null;
+          // Mark that OpenAI finished generating audio, but DON'T reset lastAssistantItem yet
+          // We need to wait for actual playback to complete (tracked via marks)
+          responseAudioDone = true;
+          
+          // Send a final mark to know when playback truly finishes
+          if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
+            void sendMark(twilioWs, streamSid, markQueue);
+          }
         }
 
         // Handle interruption (only if response is still in progress)
@@ -749,6 +755,7 @@ export class MediaStreamHandler {
             markQueue.length = 0;
             lastAssistantItem = null;
             responseStartTimestamp = null;
+            responseAudioDone = false;
           }
         }
 
@@ -803,6 +810,20 @@ export class MediaStreamHandler {
           case 'mark':
             if (markQueue.length > 0) {
               markQueue.shift();
+            }
+            
+            // Check if playback is truly complete (OpenAI done generating AND all marks confirmed)
+            if (responseAudioDone && markQueue.length === 0) {
+              logger.debug('Playback complete - clearing input buffer and resetting state');
+              
+              // Clear the input audio buffer to discard any soft acknowledgments
+              // that were buffered during AI speech
+              openaiService.clearInputAudioBuffer(openaiWs);
+              
+              // NOW reset the tracking state
+              lastAssistantItem = null;
+              responseStartTimestamp = null;
+              responseAudioDone = false;
             }
             break;
 
@@ -875,6 +896,7 @@ export class MediaStreamHandler {
     let latestMediaTimestamp = 0;
     let lastAssistantItem: string | null = null;
     let responseStartTimestamp: number | null = null;
+    let responseAudioDone = false; // Tracks if OpenAI finished generating audio (but may still be playing)
     const markQueue: string[] = [];
     let initialized = false;
     const executedFunctionCalls: ToolCallPayload[] = [];
@@ -1118,9 +1140,14 @@ export class MediaStreamHandler {
           }
           if (event.type === 'response.output_audio.done') {
             audioPlayout.notifyResponseFinished();
-            // Reset tracking - response is complete, nothing to truncate
-            lastAssistantItem = null;
-            responseStartTimestamp = null;
+            // Mark that OpenAI finished generating audio, but DON'T reset lastAssistantItem yet
+            // We need to wait for actual playback to complete (tracked via marks)
+            responseAudioDone = true;
+            
+            // Send a final mark to know when playback truly finishes
+            if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
+              void sendMark(twilioWs, streamSid, markQueue);
+            }
           }
           if (event.type === 'input_audio_buffer.speech_started') {
             logger.debug('User speech started - handling interruption');
@@ -1138,6 +1165,7 @@ export class MediaStreamHandler {
               markQueue.length = 0;
               lastAssistantItem = null;
               responseStartTimestamp = null;
+              responseAudioDone = false;
             }
           }
           if (event.type === 'error') {
@@ -1274,6 +1302,20 @@ export class MediaStreamHandler {
           case 'mark': {
             if (markQueue.length > 0) {
               markQueue.shift();
+            }
+            
+            // Check if playback is truly complete (OpenAI done generating AND all marks confirmed)
+            if (responseAudioDone && markQueue.length === 0 && openaiWs) {
+              logger.debug('Playback complete - clearing input buffer and resetting state (lazy path)');
+              
+              // Clear the input audio buffer to discard any soft acknowledgments
+              // that were buffered during AI speech
+              openaiService.clearInputAudioBuffer(openaiWs);
+              
+              // NOW reset the tracking state
+              lastAssistantItem = null;
+              responseStartTimestamp = null;
+              responseAudioDone = false;
             }
             break;
           }
