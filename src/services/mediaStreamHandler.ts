@@ -646,47 +646,6 @@ export class MediaStreamHandler {
           }
         }
 
-        if (event.type === 'response.mcp_call.completed') {
-          logger.info('MCP call completed, triggering AI response');
-          
-          const text = [
-            'The tool execution is complete.',
-            'Please share the results with the caller in a friendly, conversational way.',
-            'Be concise and natural.',
-          ].join('\n');
-
-          const itemCreate = {
-            type: 'conversation.item.create',
-            item: {
-              type: 'message',
-              role: 'user',
-              content: [
-                {
-                  type: 'input_text',
-                  text,
-                },
-              ],
-            },
-          };
-
-          const responseCreate = {
-            type: 'response.create',
-          };
-
-          if (openaiWs.readyState === WebSocket.OPEN) {
-            openaiWs.send(JSON.stringify(itemCreate), (error) => {
-              if (error) {
-                logger.error('Failed to send MCP completion item', error);
-                return;
-              }
-              // Trigger response after item is added
-              openaiWs.send(JSON.stringify(responseCreate));
-            });
-          } else {
-            logger.warn('OpenAI WebSocket not open; unable to send MCP summary');
-          }
-        }
-
         if (event.type === 'conversation.item.done' && event.item?.type === 'mcp_call') {
           const item = event.item;
           
@@ -1091,47 +1050,6 @@ export class MediaStreamHandler {
               if (event.response_id) current.responseId = event.response_id;
               if (event.tool_call_id) current.toolCallId = event.tool_call_id;
               pendingFunctionCalls.set(itemId, current);
-            }
-          }
-          if (event.type === 'response.mcp_call.completed') {
-            logger.info('MCP call completed, triggering AI response (lazy path)');
-            
-            const text = [
-              'The tool execution is complete.',
-              'Please share the results with the caller in a friendly, conversational way.',
-              'Be concise and natural.',
-            ].join('\n');
-
-            const itemCreate = {
-              type: 'conversation.item.create',
-              item: {
-                type: 'message',
-                role: 'user',
-                content: [
-                  {
-                    type: 'input_text',
-                    text,
-                  },
-                ],
-              },
-            };
-
-            const responseCreate = {
-              type: 'response.create',
-            };
-
-            const ws = openaiWs;
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify(itemCreate), (error) => {
-                if (error) {
-                  logger.error('Failed to send MCP completion item (lazy path)', error);
-                  return;
-                }
-                // Trigger response after item is added
-                ws.send(JSON.stringify(responseCreate));
-              });
-            } else {
-              logger.warn('OpenAI WebSocket not open; unable to send MCP summary (lazy path)');
             }
           }
           if (event.type === 'conversation.item.done' && event.item?.type === 'mcp_call') {
