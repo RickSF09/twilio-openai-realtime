@@ -1003,9 +1003,10 @@ export class MediaStreamHandler {
     const initOpenAI = async () => {
       if (!callConfig || !twilioCallSid) return;
 
-      openaiWs = openaiService.createConnection(callConfig.temperature);
+      const ws = openaiService.createConnection(callConfig.temperature);
+      openaiWs = ws;
 
-      openaiWs.on('open', async () => {
+      ws.on('open', async () => {
         logger.info('OpenAI WebSocket connected');
 
         // Periodically log memory and event loop health in production
@@ -1025,10 +1026,10 @@ export class MediaStreamHandler {
           }, 100);
         }, 5000);
 
-        openaiWs.on('close', () => clearInterval(healthInterval));
+        ws.on('close', () => clearInterval(healthInterval));
 
         try {
-          await openaiService.sendSessionUpdate(openaiWs as WebSocket, callConfig as CallConfig);
+          await openaiService.sendSessionUpdate(ws, callConfig as CallConfig);
         } catch (error) {
           logger.error('Failed to initialize OpenAI session', error);
         }
@@ -1036,7 +1037,7 @@ export class MediaStreamHandler {
         // treating OpenAI as ready for the first response.
       });
 
-      openaiWs.on('message', async (data: WebSocket.Data) => {
+      ws.on('message', async (data: WebSocket.Data) => {
         try {
           const event: OpenAIRealtimeEvent = JSON.parse(data.toString());
 
@@ -1117,7 +1118,7 @@ export class MediaStreamHandler {
                 executedFunctionCalls.push(toolCall);
 
                 await handleFunctionCall(current, {
-                  openaiWs: openaiWs as WebSocket,
+                  openaiWs: ws,
                   twilioWs,
                   twilioCallSid: twilioCallSid as string,
                   callConfig: callConfig as CallConfig,
@@ -1259,7 +1260,7 @@ export class MediaStreamHandler {
             if (lastAssistantItem && responseStartTimestamp !== null) {
               const elapsedTime = latestMediaTimestamp - responseStartTimestamp;
               await openaiService.handleInterruption(
-                openaiWs as WebSocket,
+                ws,
                 lastAssistantItem,
                 elapsedTime
               );
@@ -1281,11 +1282,11 @@ export class MediaStreamHandler {
         }
       });
 
-      openaiWs.on('error', (error) => {
+      ws.on('error', (error) => {
         logger.error('OpenAI WebSocket error', error);
       });
 
-      openaiWs.on('close', () => {
+      ws.on('close', () => {
         logger.info('OpenAI WebSocket closed');
       });
     };
@@ -1400,7 +1401,7 @@ export class MediaStreamHandler {
             }
             if (message.media) {
               latestMediaTimestamp = parseInt(message.media.timestamp, 10);
-              openaiService.sendAudio(openaiWs, message.media.payload);
+              openaiService.sendAudio(openaiWs!, message.media.payload);
             }
             break;
           }
