@@ -99,6 +99,10 @@ class TwilioAudioPlayout {
     this.streamingStarted = false;
   }
 
+  getBufferLength(): number {
+    return this.buffer.length;
+  }
+
   private startTimerIfReady(force: boolean): void {
     if (this.disposed || this.playoutTimer) {
       return;
@@ -119,10 +123,23 @@ class TwilioAudioPlayout {
       return;
     }
 
+    const now = performance.now();
     const targetTime =
-      (this.nextSendTime ?? performance.now()) + TwilioAudioPlayout.FRAME_DURATION_MS;
+      (this.nextSendTime ?? now) + TwilioAudioPlayout.FRAME_DURATION_MS;
+    
+    // Track drift if we have a previous target
+    if (this.nextSendTime !== null) {
+      const drift = now - this.nextSendTime;
+      if (drift > 10) { // Log significant drift (>10ms)
+        logger.warn('Playout timer drift detected', { drift, targetTime: this.nextSendTime, actualTime: now });
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:125',message:'TIMER_DRIFT_DETECTED',data:{drift,targetTime:this.nextSendTime,actualTime:now},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
+      }
+    }
+
     this.nextSendTime = targetTime;
-    const delay = Math.max(0, targetTime - performance.now());
+    const delay = Math.max(0, targetTime - now);
 
     this.playoutTimer = setTimeout(() => {
       this.playoutTimer = null;
@@ -511,6 +528,25 @@ export class MediaStreamHandler {
     openaiWs.on('open', async () => {
       logger.info('OpenAI WebSocket connected');
       
+      // Periodically log memory and event loop health in production
+      const healthInterval = setInterval(() => {
+        const memory = process.memoryUsage();
+        const start = performance.now();
+        setTimeout(() => {
+          const lag = performance.now() - start - 100; // 100ms expected
+          const healthData = {rss:Math.round(memory.rss/1024/1024),heapUsed:Math.round(memory.heapUsed/1024/1024),eventLoopLag:Math.round(lag)};
+          logger.info('SERVER_HEALTH_REPORT', healthData);
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:517',message:'SERVER_HEALTH_REPORT',data:healthData,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,B'})}).catch(()=>{});
+          // #endregion
+          if (lag > 50) {
+            logger.warn('Significant event loop lag detected', { lag: Math.round(lag) });
+          }
+        }, 100);
+      }, 5000);
+
+      openaiWs.on('close', () => clearInterval(healthInterval));
+
       try {
         // Send session configuration
         await openaiService.sendSessionUpdate(openaiWs, callConfig);
@@ -730,6 +766,11 @@ export class MediaStreamHandler {
         }
 
         if (event.type === 'response.output_audio.done') {
+          const genDoneData = {markQueueLength:markQueue.length,bufferLength:audioPlayout.getBufferLength()};
+          logger.info('AI_GENERATION_DONE', genDoneData);
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:743',message:'AI_GENERATION_DONE',data:genDoneData,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+          // #endregion
           audioPlayout.notifyResponseFinished();
           // Mark that OpenAI finished generating audio, but DON'T reset lastAssistantItem yet
           // We need to wait for actual playback to complete (tracked via marks)
@@ -743,6 +784,11 @@ export class MediaStreamHandler {
 
         // Handle interruption (only if response is still in progress)
         if (event.type === 'input_audio_buffer.speech_started') {
+          const interruptionData = {lastAssistantItem,responseStartTimestamp,responseAudioDone,markQueueLength:markQueue.length};
+          logger.info('INTERRUPTION_RECEIVED', interruptionData);
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:772',message:'INTERRUPTION_RECEIVED',data:interruptionData,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+          // #endregion
           logger.debug('User speech started - handling interruption');
           
           if (lastAssistantItem && responseStartTimestamp !== null) {
@@ -961,6 +1007,26 @@ export class MediaStreamHandler {
 
       openaiWs.on('open', async () => {
         logger.info('OpenAI WebSocket connected');
+
+        // Periodically log memory and event loop health in production
+        const healthInterval = setInterval(() => {
+          const memory = process.memoryUsage();
+          const start = performance.now();
+          setTimeout(() => {
+            const lag = performance.now() - start - 100; // 100ms expected
+            const healthData = {rss:Math.round(memory.rss/1024/1024),heapUsed:Math.round(memory.heapUsed/1024/1024),eventLoopLag:Math.round(lag)};
+            logger.info('SERVER_HEALTH_REPORT (lazy)', healthData);
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:938-lazy',message:'SERVER_HEALTH_REPORT',data:healthData,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,B'})}).catch(()=>{});
+            // #endregion
+            if (lag > 50) {
+              logger.warn('Significant event loop lag detected (lazy)', { lag: Math.round(lag) });
+            }
+          }, 100);
+        }, 5000);
+
+        openaiWs.on('close', () => clearInterval(healthInterval));
+
         try {
           await openaiService.sendSessionUpdate(openaiWs as WebSocket, callConfig as CallConfig);
         } catch (error) {
@@ -1168,6 +1234,11 @@ export class MediaStreamHandler {
             }
           }
           if (event.type === 'response.output_audio.done') {
+            const genDoneData = {markQueueLength:markQueue.length,bufferLength:audioPlayout.getBufferLength()};
+            logger.info('AI_GENERATION_DONE (lazy)', genDoneData);
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:1159-lazy',message:'AI_GENERATION_DONE',data:genDoneData,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+            // #endregion
             audioPlayout.notifyResponseFinished();
             // Mark that OpenAI finished generating audio, but DON'T reset lastAssistantItem yet
             // We need to wait for actual playback to complete (tracked via marks)
@@ -1179,6 +1250,11 @@ export class MediaStreamHandler {
             }
           }
           if (event.type === 'input_audio_buffer.speech_started') {
+            const interruptionData = {lastAssistantItem,responseStartTimestamp,responseAudioDone,markQueueLength:markQueue.length};
+            logger.info('INTERRUPTION_RECEIVED (lazy)', interruptionData);
+            // #region agent log
+            fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:1174-lazy',message:'INTERRUPTION_RECEIVED',data:interruptionData,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+            // #endregion
             logger.debug('User speech started - handling interruption');
             if (lastAssistantItem && responseStartTimestamp !== null) {
               const elapsedTime = latestMediaTimestamp - responseStartTimestamp;
