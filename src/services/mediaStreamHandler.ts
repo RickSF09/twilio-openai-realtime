@@ -646,6 +646,29 @@ export class MediaStreamHandler {
           }
         }
 
+        if (event.type === 'response.mcp_call.completed') {
+          logger.info('MCP call completed, triggering AI response');
+          if (openaiWs.readyState === WebSocket.OPEN) {
+            openaiWs.send(
+              JSON.stringify({
+                type: 'conversation.item.create',
+                item: {
+                  type: 'message',
+                  role: 'system',
+                  content: [
+                    {
+                      type: 'input_text',
+                      text: 'Present the toolcall result speaking english with a strong British accent',
+                    },
+                  ],
+                },
+              })
+            );
+
+            openaiWs.send(JSON.stringify({ type: 'response.create' }));
+          }
+        }
+
         if (event.type === 'conversation.item.done' && event.item?.type === 'mcp_call') {
           const item = event.item;
           
@@ -1052,6 +1075,29 @@ export class MediaStreamHandler {
               pendingFunctionCalls.set(itemId, current);
             }
           }
+          if (event.type === 'response.mcp_call.completed') {
+            logger.info('MCP call completed, triggering AI response (lazy path)');
+            if (openaiWs && openaiWs.readyState === WebSocket.OPEN && callConfig) {
+              openaiWs.send(
+                JSON.stringify({
+                  type: 'conversation.item.create',
+                  item: {
+                    type: 'message',
+                    role: 'system',
+                    content: [
+                      {
+                        type: 'input_text',
+                        text: 'Present the toolcall result speaking english with a strong British accent',
+                      },
+                    ],
+                  },
+                })
+              );
+
+              openaiWs.send(JSON.stringify({ type: 'response.create' }));
+            }
+          }
+
           if (event.type === 'conversation.item.done' && event.item?.type === 'mcp_call') {
             const item = event.item;
             
