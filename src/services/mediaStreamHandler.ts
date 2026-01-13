@@ -99,6 +99,10 @@ class TwilioAudioPlayout {
     this.streamingStarted = false;
   }
 
+  getBufferLength(): number {
+    return this.buffer.length;
+  }
+
   private startTimerIfReady(force: boolean): void {
     if (this.disposed || this.playoutTimer) {
       return;
@@ -868,8 +872,11 @@ export class MediaStreamHandler {
               markQueue.shift();
             }
             
-            // Check if playback is truly complete (OpenAI done generating AND all marks confirmed)
-            if (responseAudioDone && markQueue.length === 0) {
+            // Check if playback is truly complete:
+            // 1. OpenAI done generating (responseAudioDone)
+            // 2. All marks confirmed (markQueue.length === 0)
+            // 3. No audio left in buffer (audioPlayout.getBufferLength() === 0)
+            if (responseAudioDone && markQueue.length === 0 && audioPlayout.getBufferLength() === 0) {
               logger.debug('Playback complete - clearing input buffer and resetting state');
               
               // Clear the input audio buffer to discard any soft acknowledgments
@@ -1406,8 +1413,8 @@ export class MediaStreamHandler {
               markQueue.shift();
             }
             
-            // Check if playback is truly complete (OpenAI done generating AND all marks confirmed)
-            if (responseAudioDone && markQueue.length === 0 && openaiWs) {
+            // Check if playback is truly complete (OpenAI done generating AND all marks confirmed AND buffer empty)
+            if (responseAudioDone && markQueue.length === 0 && openaiWs && audioPlayout.getBufferLength() === 0) {
               logger.debug('Playback complete - clearing input buffer and resetting state (lazy path)');
               
               // Clear the input audio buffer to discard any soft acknowledgments
