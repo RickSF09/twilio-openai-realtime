@@ -54,3 +54,6 @@ export function validateConfig(): void {
     );
   }
 }
+
+// Run validation immediately on import
+validateConfig();

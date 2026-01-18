@@ -11,7 +11,14 @@
     "start": "node dist/index.js",
     "clean": "rm -rf dist"
   },
-  "keywords": ["twilio", "openai", "realtime-api", "voice", "ai", "websocket"],
+  "keywords": [
+    "twilio",
+    "openai",
+    "realtime-api",
+    "voice",
+    "ai",
+    "websocket"
+  ],
   "author": "",
   "license": "MIT",
   "packageManager": "pnpm@10.20.0",

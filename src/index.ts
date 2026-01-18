@@ -1,22 +1,13 @@
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { config, validateConfig } from './utils/config';
+import { config } from './utils/config';
 import { logger } from './utils/logger';
 import routes from './routes';
 import { mediaStreamHandler } from './services/mediaStreamHandler';
 import { n8nService } from './services/n8nService';
 import { sessionManager } from './services/sessionManager';
 import { N8nConfigRequest } from './types';
-
-// Validate configuration
-try {
-  validateConfig();
-  logger.info('Configuration validated successfully');
-} catch (error) {
-  logger.error('Configuration validation failed', error);
-  process.exit(1);
-}
 
 // Create Express app
 const app = express();
