@@ -852,8 +852,8 @@ export class MediaStreamHandler {
               triggerInitialAssistantResponse();
             }
 
-            // Start recording for outbound calls when stream starts (call is answered)
-            if (direction === 'outbound' && realCallSid) {
+            // Start recording when stream starts (call is answered)
+            if (realCallSid) {
               twilioService.startRecording(realCallSid).catch((error) => {
                 logger.error('Failed to start recording on stream start', error);
               });
@@ -1340,11 +1340,6 @@ export class MediaStreamHandler {
                 from,
                 to
               );
-
-              // Start recording now that the outbound stream is live
-              twilioService.startRecording(twilioCallSid).catch((error) => {
-                logger.error('Failed to start recording on stream start (lazy path)', error);
-              });
             } else {
               // Inbound call - extract from/to from customParameters
               from = params['from'];
@@ -1393,6 +1388,11 @@ export class MediaStreamHandler {
 
               logger.info('Inbound call initialized via lazy path', { twilioCallSid, from, to });
             }
+
+            // Start recording now that the stream is live
+            twilioService.startRecording(twilioCallSid).catch((error) => {
+              logger.error('Failed to start recording on stream start (lazy path)', error);
+            });
 
             await initOpenAI();
             initialized = true;

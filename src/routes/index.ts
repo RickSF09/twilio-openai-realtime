@@ -78,11 +78,6 @@ router.post('/incoming-call', async (req: Request, res: Response) => {
     // Generate TwiML with custom parameters (Twilio passes these in the 'start' event)
     const twiml = twilioService.generateInboundTwiML(websocketUrl, callSid, from, to);
 
-    // Start call recording (non-blocking)
-    twilioService.startRecording(callSid).catch((err) => {
-      logger.error('Failed to start recording for inbound call', err);
-    });
-
     res.type('text/xml');
     res.send(twiml);
   } catch (error) {
