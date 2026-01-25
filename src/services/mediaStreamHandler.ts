@@ -513,13 +513,15 @@ export class MediaStreamHandler {
         type: 'response.create',
       };
 
+      // Mark as triggered immediately to prevent race conditions
+      initialResponseTriggered = true;
+
       openaiWs.send(JSON.stringify(responseCreate), (error) => {
         if (error) {
           logger.error('Failed to trigger initial assistant response', error);
           return;
         }
 
-        initialResponseTriggered = true;
         logger.info('Initial assistant response triggered automatically');
       });
     };
@@ -852,7 +854,7 @@ export class MediaStreamHandler {
               triggerInitialAssistantResponse();
             }
 
-            // Start recording when stream starts (call is answered)
+             // Start recording when stream starts (call is answered)
             if (realCallSid) {
               twilioService.startRecording(realCallSid).catch((error) => {
                 logger.error('Failed to start recording on stream start', error);
@@ -992,13 +994,15 @@ export class MediaStreamHandler {
         type: 'response.create',
       };
 
+      // Mark as triggered immediately to prevent race conditions
+      initialResponseTriggered = true;
+
       openaiWs.send(JSON.stringify(responseCreate), (error) => {
         if (error) {
           logger.error('Failed to trigger initial assistant response (lazy path)', error);
           return;
         }
 
-        initialResponseTriggered = true;
         logger.info('Initial assistant response triggered automatically (lazy path)');
       });
     };
