@@ -132,6 +132,10 @@ export interface OpenAISessionConfig {
   };
   instructions?: string;
   tools?: ToolConfig[];
+  truncation?: {
+    type: 'retention_ratio' | 'none';
+    retention_ratio?: number;
+  };
 }
 
 export interface CallSession {

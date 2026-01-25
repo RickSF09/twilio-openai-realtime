@@ -98,6 +98,12 @@ export class OpenAIRealtimeService {
       sessionConfig.tools = tools;
     }
 
+    // Add truncation strategy
+    sessionConfig.truncation = {
+      type: 'retention_ratio',
+      retention_ratio: 0.8,
+    };
+
     return sessionConfig;
   }
 
