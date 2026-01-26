@@ -20,6 +20,8 @@ import {
 
 // Track calls that have already had completion processing to avoid duplicates
 const completedCallSids = new Set<string>();
+// Track calls that are currently being processed to avoid race conditions
+const processingCallSids = new Set<string>();
 
 const TOKEN_DETAIL_KEYS: Array<keyof TokenUsageBreakdown> = [
   'text_tokens',
@@ -1511,61 +1513,70 @@ async function handleCallEnd(
   toolCalls?: ToolCallPayload[]
 ): Promise<void> {
   // Idempotency guard - ensure we only process completion once per call
-  if (completedCallSids.has(twilioCallSid)) {
+  // Check both completed and currently processing calls
+  if (completedCallSids.has(twilioCallSid) || processingCallSids.has(twilioCallSid)) {
     return;
   }
 
-  // Try to retrieve session data without removing it yet
-  let session = sessionManager.getSession(twilioCallSid);
+  // Mark as processing immediately
+  processingCallSids.add(twilioCallSid);
 
-  // Mark as ended (sets endTime) if we still have the session in memory
-  if (session) {
-    session = sessionManager.endSession(twilioCallSid);
-  } else {
-    // No session available - proceed with minimal data instead of dropping the webhook
-    logger.debug('Session missing at call end, sending minimal completion webhook', { twilioCallSid });
-  }
+  try {
+    // Try to retrieve session data without removing it yet
+    let session = sessionManager.getSession(twilioCallSid);
 
-  const duration = session?.endTime && session?.startTime
-    ? Math.floor((session.endTime.getTime() - session.startTime.getTime()) / 1000)
-    : undefined;
-
-  const completionData: N8nCompletionWebhook = {
-    event: 'call.completed',
-    twilio_call_sid: twilioCallSid,
-    openai_conversation_id: session?.openaiConversationId || 'unknown',
-    from,
-    to,
-    direction,
-    duration,
-    status: 'completed',
-    metadata: session?.config.metadata || callConfig.metadata,
-    timestamp: new Date().toISOString(),
-  };
-
-  if (toolCalls && toolCalls.length > 0) {
-    completionData.tool_calls = toolCalls;
-  }
-
-  if (session?.tokenUsage) {
-    completionData.token_usage = session.tokenUsage;
-  }
-
-  // Send completion webhook; only mark completed on success
-  const sent = await n8nService.sendCompletionWebhook(
-    callConfig.webhook_url,
-    completionData
-  );
-
-  if (sent) {
-    completedCallSids.add(twilioCallSid);
+    // Mark as ended (sets endTime) if we still have the session in memory
     if (session) {
-      sessionManager.removeSession(twilioCallSid);
+      session = sessionManager.endSession(twilioCallSid);
+    } else {
+      // No session available - proceed with minimal data instead of dropping the webhook
+      logger.debug('Session missing at call end, sending minimal completion webhook', { twilioCallSid });
     }
-    // Allow the set to be cleaned after a short delay to avoid unbounded growth
-    setTimeout(() => completedCallSids.delete(twilioCallSid), 5 * 60 * 1000);
-  } else {
-    logger.warn('Completion webhook failed to send; will allow retry on subsequent close/stop', { twilioCallSid });
+
+    const duration = session?.endTime && session?.startTime
+      ? Math.floor((session.endTime.getTime() - session.startTime.getTime()) / 1000)
+      : undefined;
+
+    const completionData: N8nCompletionWebhook = {
+      event: 'call.completed',
+      twilio_call_sid: twilioCallSid,
+      openai_conversation_id: session?.openaiConversationId || 'unknown',
+      from,
+      to,
+      direction,
+      duration,
+      status: 'completed',
+      metadata: session?.config.metadata || callConfig.metadata,
+      timestamp: new Date().toISOString(),
+    };
+
+    if (toolCalls && toolCalls.length > 0) {
+      completionData.tool_calls = toolCalls;
+    }
+
+    if (session?.tokenUsage) {
+      completionData.token_usage = session.tokenUsage;
+    }
+
+    // Send completion webhook; only mark completed on success
+    const sent = await n8nService.sendCompletionWebhook(
+      callConfig.webhook_url,
+      completionData
+    );
+
+    if (sent) {
+      completedCallSids.add(twilioCallSid);
+      if (session) {
+        sessionManager.removeSession(twilioCallSid);
+      }
+      // Allow the set to be cleaned after a short delay to avoid unbounded growth
+      setTimeout(() => completedCallSids.delete(twilioCallSid), 5 * 60 * 1000);
+    } else {
+      logger.warn('Completion webhook failed to send; will allow retry on subsequent close/stop', { twilioCallSid });
+    }
+  } finally {
+    // Always remove from processing set
+    processingCallSids.delete(twilioCallSid);
   }
 }
 
