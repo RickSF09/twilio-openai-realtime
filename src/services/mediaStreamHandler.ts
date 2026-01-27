@@ -526,6 +526,39 @@ export class MediaStreamHandler {
     let twilioReadyForInitialResponse = false;
     let initialResponseTriggered = false;
 
+    // Idle timeout state
+    let idleTimer: NodeJS.Timeout | null = null;
+    let nudgeCount = 0;
+    const IDLE_TIMEOUT_MS = 30000;
+
+    const stopIdleTimer = () => {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+    };
+
+    const startIdleTimer = () => {
+      stopIdleTimer();
+      idleTimer = setTimeout(() => {
+        nudgeCount++;
+        if (nudgeCount > 2) {
+          logger.info('Max idle timeouts reached, dropping call', { twilioCallSid });
+          if (twilioWs.readyState === WebSocket.OPEN) {
+            twilioWs.close();
+          }
+          if (openaiWs.readyState === WebSocket.OPEN) {
+            openaiWs.close();
+          }
+        } else {
+          logger.info('Idle timeout reached, sending nudge', { twilioCallSid, nudgeCount });
+          if (openaiWs.readyState === WebSocket.OPEN) {
+            openaiWs.send(JSON.stringify({ type: 'response.create' }));
+          }
+        }
+      }, IDLE_TIMEOUT_MS);
+    };
+
     const triggerInitialAssistantResponse = (): void => {
       if (
         initialResponseTriggered ||
@@ -796,6 +829,7 @@ export class MediaStreamHandler {
 
         // Send audio delta to Twilio
         if (event.type === 'response.output_audio.delta' && event.delta) {
+          stopIdleTimer();
           audioPlayout.enqueue(event.delta);
 
           if (event.item_id && event.item_id !== lastAssistantItem) {
@@ -823,6 +857,8 @@ export class MediaStreamHandler {
 
         // Handle interruption (only if response is still in progress)
         if (event.type === 'input_audio_buffer.speech_started') {
+          stopIdleTimer();
+          nudgeCount = 0;
           const interruptionData = {lastAssistantItem,responseStartTimestamp,responseAudioDone,markQueueLength:markQueue.length};
           logger.info('INTERRUPTION_RECEIVED', interruptionData);
           // #region agent log
@@ -917,6 +953,7 @@ export class MediaStreamHandler {
             // 3. No audio left in buffer (audioPlayout.getBufferLength() === 0)
             if (responseAudioDone && markQueue.length === 0 && audioPlayout.getBufferLength() === 0) {
               logger.debug('Playback complete - clearing input buffer and resetting state');
+              startIdleTimer();
               
               // Clear the input audio buffer to discard any soft acknowledgments
               // that were buffered during AI speech
@@ -958,6 +995,7 @@ export class MediaStreamHandler {
 
     twilioWs.on('close', async () => {
       logger.info('Twilio WebSocket closed');
+      stopIdleTimer();
       audioPlayout.dispose();
       
       // Ensure OpenAI connection is closed
@@ -1011,6 +1049,39 @@ export class MediaStreamHandler {
     let openaiReadyForInitialResponse = false;
     let twilioReadyForInitialResponse = false;
     let initialResponseTriggered = false;
+
+    // Idle timeout state (lazy)
+    let idleTimer: NodeJS.Timeout | null = null;
+    let nudgeCount = 0;
+    const IDLE_TIMEOUT_MS = 30000;
+
+    const stopIdleTimer = () => {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+    };
+
+    const startIdleTimer = () => {
+      stopIdleTimer();
+      idleTimer = setTimeout(() => {
+        nudgeCount++;
+        if (nudgeCount > 2) {
+          logger.info('Max idle timeouts reached, dropping call (lazy)', { twilioCallSid });
+          if (twilioWs.readyState === WebSocket.OPEN) {
+            twilioWs.close();
+          }
+          if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+            openaiWs.close();
+          }
+        } else {
+          logger.info('Idle timeout reached, sending nudge (lazy)', { twilioCallSid, nudgeCount });
+          if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+            openaiWs.send(JSON.stringify({ type: 'response.create' }));
+          }
+        }
+      }, IDLE_TIMEOUT_MS);
+    };
 
     const triggerInitialAssistantResponse = (): void => {
       if (
@@ -1278,6 +1349,7 @@ export class MediaStreamHandler {
             triggerInitialAssistantResponse();
           }
           if (event.type === 'response.output_audio.delta' && event.delta) {
+            stopIdleTimer();
             audioPlayout.enqueue(event.delta);
             if (event.item_id && event.item_id !== lastAssistantItem) {
               responseStartTimestamp = latestMediaTimestamp;
@@ -1301,6 +1373,8 @@ export class MediaStreamHandler {
             }
           }
           if (event.type === 'input_audio_buffer.speech_started') {
+            stopIdleTimer();
+            nudgeCount = 0;
             const interruptionData = {lastAssistantItem,responseStartTimestamp,responseAudioDone,markQueueLength:markQueue.length};
             logger.info('INTERRUPTION_RECEIVED (lazy)', interruptionData);
             // #region agent log
@@ -1463,6 +1537,7 @@ export class MediaStreamHandler {
             // Check if playback is truly complete (OpenAI done generating AND all marks confirmed AND buffer empty)
             if (responseAudioDone && markQueue.length === 0 && openaiWs && audioPlayout.getBufferLength() === 0) {
               logger.debug('Playback complete - clearing input buffer and resetting state (lazy path)');
+              startIdleTimer();
               
               // Clear the input audio buffer to discard any soft acknowledgments
               // that were buffered during AI speech
@@ -1505,6 +1580,7 @@ export class MediaStreamHandler {
 
     twilioWs.on('close', async () => {
       logger.info('Twilio WebSocket closed');
+      stopIdleTimer();
       audioPlayout.dispose();
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
         openaiWs.close();
