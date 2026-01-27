@@ -45,7 +45,7 @@ router.post('/incoming-call', async (req: Request, res: Response) => {
         };
 
         const timeoutMs = 16000; // keep under Twilio's expected webhook response window
-        const prefetch = n8nService.fetchConfig(n8nWebhookUrl, configRequest);
+        const prefetch = n8nService.fetchConfigOnce(n8nWebhookUrl, configRequest);
         const prefetchedConfig = await Promise.race([
           prefetch,
           new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),

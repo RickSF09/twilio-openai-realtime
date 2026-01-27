@@ -111,7 +111,7 @@ wss.on('connection', async (ws: WebSocket, req) => {
             timestamp: new Date().toISOString(),
           };
 
-          callConfig = await n8nService.fetchConfig(n8nWebhookUrl, configRequest);
+          callConfig = await n8nService.fetchConfigOnce(n8nWebhookUrl, configRequest);
         } else {
           // Use default config if no webhook URL configured
           callConfig = n8nService.getDefaultConfig('');

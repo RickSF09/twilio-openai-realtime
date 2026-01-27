@@ -4,6 +4,31 @@ import { logger } from '../utils/logger';
 import { CallConfig, N8nConfigRequest, N8nCompletionWebhook } from '../types';
 
 export class N8nService {
+  private inFlightConfigs = new Map<string, Promise<CallConfig>>();
+  private recentConfigs = new Map<string, { config: CallConfig; expiresAt: number }>();
+
+  private buildConfigCacheKey(webhookUrl: string, callData: N8nConfigRequest): string | null {
+    if (!callData.twilio_call_sid) {
+      return null;
+    }
+
+    return `${webhookUrl}:${callData.twilio_call_sid}`;
+  }
+
+  private readCachedConfig(cacheKey: string): CallConfig | null {
+    const entry = this.recentConfigs.get(cacheKey);
+    if (!entry) {
+      return null;
+    }
+
+    if (Date.now() > entry.expiresAt) {
+      this.recentConfigs.delete(cacheKey);
+      return null;
+    }
+
+    return entry.config;
+  }
+
   /**
    * Fetch call configuration from n8n webhook
    */
@@ -35,6 +60,51 @@ export class N8nService {
         temperature: config.defaults.temperature,
       };
     }
+  }
+
+  /**
+   * Fetch call configuration with in-flight + short-term caching to avoid duplicates.
+   */
+  async fetchConfigOnce(
+    webhookUrl: string,
+    callData: N8nConfigRequest,
+    cacheTtlMs = 2 * 60 * 1000
+  ): Promise<CallConfig> {
+    const cacheKey = this.buildConfigCacheKey(webhookUrl, callData);
+
+    if (cacheKey) {
+      const cached = this.readCachedConfig(cacheKey);
+      if (cached) {
+        return cached;
+      }
+
+      const inFlight = this.inFlightConfigs.get(cacheKey);
+      if (inFlight) {
+        return inFlight;
+      }
+    }
+
+    const requestPromise = this.fetchConfig(webhookUrl, callData)
+      .then((result) => {
+        if (cacheKey) {
+          this.recentConfigs.set(cacheKey, {
+            config: result,
+            expiresAt: Date.now() + cacheTtlMs,
+          });
+        }
+        return result;
+      })
+      .finally(() => {
+        if (cacheKey) {
+          this.inFlightConfigs.delete(cacheKey);
+        }
+      });
+
+    if (cacheKey) {
+      this.inFlightConfigs.set(cacheKey, requestPromise);
+    }
+
+    return requestPromise;
   }
 
   /**
