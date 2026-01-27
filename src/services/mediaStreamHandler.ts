@@ -265,6 +265,12 @@ interface FunctionCallContext {
   from?: string;
   to?: string;
   executedFunctionCalls: ToolCallPayload[];
+  getAudioStatus: () => {
+    responseAudioDone: boolean;
+    markQueueLength: number;
+    bufferLength: number;
+    lastAssistantItem: string | null;
+  };
 }
 
 function mergeBreakdown(
@@ -382,27 +388,50 @@ function recordTokenUsage(
 }
 
 async function executeHangupCall(
-  state: FunctionCallState,
+  _state: FunctionCallState,
   context: FunctionCallContext
 ): Promise<void> {
-  const { callId } = state;
+  logger.info('Hangup requested by assistant, waiting for audio to finish...', {
+    twilioCallSid: context.twilioCallSid,
+  });
 
-  if (!callId) {
-    logger.warn('Hangup call function invoked without call_id', {
-      twilioCallSid: context.twilioCallSid,
-    });
-    return;
+  // Wait for audio to finish playing
+  // We check periodically if:
+  // 1. OpenAI finished generating audio (responseAudioDone)
+  // 2. All marks were confirmed by Twilio (markQueueLength === 0)
+  // 3. No audio left in the playout buffer (bufferLength === 0)
+  
+  const startTime = Date.now();
+  const timeout = 30000; // 30 seconds max wait
+  
+  while (Date.now() - startTime < timeout) {
+    const { responseAudioDone, markQueueLength, bufferLength, lastAssistantItem } = context.getAudioStatus();
+    
+    // Check if we are truly done playing audio
+    // We are done if:
+    // 1. OpenAI is done generating (responseAudioDone) AND everything is played (markQueue=0, buffer=0)
+    // OR
+    // 2. We are in an idle/reset state (lastAssistantItem is null) AND everything is played
+    
+    const isPlaybackComplete = responseAudioDone && markQueueLength === 0 && bufferLength === 0;
+    const isIdle = !lastAssistantItem && markQueueLength === 0 && bufferLength === 0;
+
+    if (isPlaybackComplete || isIdle) {
+      break;
+    }
+    
+    await new Promise(resolve => setTimeout(resolve, 100));
   }
 
-  try {
-    await openaiService.hangupCall(callId);
-  } catch (error) {
-    logger.error('Failed to request OpenAI hangup', {
-      callId,
-      twilioCallSid: context.twilioCallSid,
-      error,
-    });
-  }
+  // Add the extra 2 seconds delay as requested to make it less abrupt
+  logger.info('Audio finished, waiting 2 seconds before dropping call', {
+    twilioCallSid: context.twilioCallSid,
+  });
+  await new Promise(resolve => setTimeout(resolve, 2000));
+
+  logger.info('Closing connections after hangup delay', {
+    twilioCallSid: context.twilioCallSid,
+  });
 
   if (context.openaiWs.readyState === WebSocket.OPEN) {
     context.openaiWs.close(1000, 'Hangup requested by assistant');
@@ -650,6 +679,12 @@ export class MediaStreamHandler {
               from,
               to,
               executedFunctionCalls,
+              getAudioStatus: () => ({
+                responseAudioDone,
+                markQueueLength: markQueue.length,
+                bufferLength: audioPlayout.getBufferLength(),
+                lastAssistantItem,
+              }),
             });
           }
         }
@@ -1135,6 +1170,12 @@ export class MediaStreamHandler {
                   from,
                   to,
                   executedFunctionCalls,
+                  getAudioStatus: () => ({
+                    responseAudioDone,
+                    markQueueLength: markQueue.length,
+                    bufferLength: audioPlayout.getBufferLength(),
+                    lastAssistantItem,
+                  }),
                 });
               }
             }

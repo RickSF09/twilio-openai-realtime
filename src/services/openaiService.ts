@@ -1,4 +1,3 @@
-import axios from 'axios';
 import WebSocket from 'ws';
 import { config } from '../utils/config';
 import { logger } from '../utils/logger';
@@ -201,28 +200,6 @@ export class OpenAIRealtimeService {
 
     logger.debug('Clearing input audio buffer');
     ws.send(JSON.stringify(clearEvent));
-  }
-
-  /**
-   * Request OpenAI to hang up an active call
-   */
-  async hangupCall(callId: string): Promise<void> {
-    const url = `https://api.openai.com/v1/realtime/calls/${callId}/hangup`;
-
-    try {
-      await axios.post(url, undefined, {
-        headers: {
-          Authorization: `Bearer ${config.openai.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 10000,
-      });
-
-      logger.info('Requested OpenAI hangup for call', { callId });
-    } catch (error) {
-      logger.error('Failed to hang up OpenAI call', { callId, error });
-      throw error;
-    }
   }
 }
 
