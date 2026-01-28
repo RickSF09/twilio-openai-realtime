@@ -810,10 +810,16 @@ export class MediaStreamHandler {
           const current = pendingFunctionCalls.get(item.id);
           if (current) {
             pendingFunctionCalls.delete(item.id);
-          }
+           }
         }
 
-        // Extract conversation ID from session.created and trigger initial response
+        if (event.type === 'session.updated') {
+          logger.info('Session updated, ready for initial response');
+          openaiReadyForInitialResponse = true;
+          triggerInitialAssistantResponse();
+        }
+
+        // Extract conversation ID from session.created
         if (event.type === 'session.created') {
           if (event.session?.id) {
             sessionManager.updateOpenAIConversationId(
@@ -821,10 +827,6 @@ export class MediaStreamHandler {
               event.session.id
             );
           }
-
-          // Only now consider OpenAI "ready" for the first response
-          openaiReadyForInitialResponse = true;
-          triggerInitialAssistantResponse();
         }
 
         // Send audio delta to Twilio
@@ -1337,6 +1339,12 @@ export class MediaStreamHandler {
               pendingFunctionCalls.delete(item.id);
             }
           }
+          if (event.type === 'session.updated') {
+            logger.info('Session updated, ready for initial response (lazy)');
+            openaiReadyForInitialResponse = true;
+            triggerInitialAssistantResponse();
+          }
+
           if (event.type === 'session.created') {
             if (event.session?.id) {
               sessionManager.updateOpenAIConversationId(
@@ -1344,9 +1352,6 @@ export class MediaStreamHandler {
                 event.session.id
               );
             }
-
-            openaiReadyForInitialResponse = true;
-            triggerInitialAssistantResponse();
           }
           if (event.type === 'response.output_audio.delta' && event.delta) {
             stopIdleTimer();
