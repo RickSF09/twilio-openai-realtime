@@ -868,19 +868,10 @@ export class MediaStreamHandler {
           // #endregion
           logger.debug('User speech started - handling interruption');
           
-          // Only truncate if the AI is still generating audio (not yet done)
-          // If responseAudioDone is true, the response is complete and truncation would fail
-          if (lastAssistantItem && responseStartTimestamp !== null && !responseAudioDone) {
+          if (lastAssistantItem && responseStartTimestamp !== null) {
             const elapsedTime = latestMediaTimestamp - responseStartTimestamp;
-            
-            // Truncate OpenAI response
-            await openaiService.handleInterruption(
-              openaiWs,
-              lastAssistantItem,
-              elapsedTime
-            );
 
-            // Clear Twilio buffer
+            // 1. Always stop playback immediately
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
               twilioWs.send(JSON.stringify({
                 event: 'clear',
@@ -889,8 +880,17 @@ export class MediaStreamHandler {
             }
 
             audioPlayout.reset();
+            
+            // 2. Only truncate if the AI is still generating audio (not yet done)
+            if (!responseAudioDone) {
+              await openaiService.handleInterruption(
+                openaiWs,
+                lastAssistantItem,
+                elapsedTime
+              );
+            }
 
-            // Reset state
+            // 3. Reset state
             markQueue.length = 0;
             lastAssistantItem = null;
             responseStartTimestamp = null;
@@ -1388,19 +1388,22 @@ export class MediaStreamHandler {
             fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:1174-lazy',message:'INTERRUPTION_RECEIVED',data:interruptionData,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
             // #endregion
             logger.debug('User speech started - handling interruption');
-            // Only truncate if the AI is still generating audio (not yet done)
-            // If responseAudioDone is true, the response is complete and truncation would fail
-            if (lastAssistantItem && responseStartTimestamp !== null && !responseAudioDone) {
+            if (lastAssistantItem && responseStartTimestamp !== null) {
               const elapsedTime = latestMediaTimestamp - responseStartTimestamp;
-              await openaiService.handleInterruption(
-                ws,
-                lastAssistantItem,
-                elapsedTime
-              );
+
               if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
                 twilioWs.send(JSON.stringify({ event: 'clear', streamSid }));
               }
               audioPlayout.reset();
+
+              if (!responseAudioDone) {
+                await openaiService.handleInterruption(
+                  ws,
+                  lastAssistantItem,
+                  elapsedTime
+                );
+              }
+
               markQueue.length = 0;
               lastAssistantItem = null;
               responseStartTimestamp = null;
