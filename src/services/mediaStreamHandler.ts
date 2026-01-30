@@ -44,6 +44,7 @@ class TwilioAudioPlayout {
   private disposed = false;
   private streamingStarted = false;
   private nextSendTime: number | null = null;
+  public onDrained: (() => void) | null = null;
 
   private static readonly FRAME_DURATION_MS = 20;
   private static readonly FRAME_SIZE_BYTES = 160;
@@ -231,6 +232,11 @@ class TwilioAudioPlayout {
       this.pendingDrain = false;
       this.streamingStarted = false;
       this.clearTimer();
+      
+      if (this.onDrained) {
+        this.onDrained();
+        this.onDrained = null; // Reset after firing
+      }
     }
   }
 
@@ -863,15 +869,17 @@ export class MediaStreamHandler {
           // #region agent log
           fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:743',message:'AI_GENERATION_DONE',data:genDoneData,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
           // #endregion
-          audioPlayout.notifyResponseFinished();
-          // Mark that OpenAI finished generating audio, but DON'T reset lastAssistantItem yet
-          // We need to wait for actual playback to complete (tracked via marks)
+
           responseAudioDone = true;
+
+          // Send a final mark only when the audio buffer is fully drained
+          audioPlayout.onDrained = () => {
+            if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
+              void sendMark(twilioWs, streamSid, markQueue);
+            }
+          };
           
-          // Send a final mark to know when playback truly finishes
-          if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
-            void sendMark(twilioWs, streamSid, markQueue);
-          }
+          audioPlayout.notifyResponseFinished();
         }
 
         // Handle interruption (only if response is still in progress)
@@ -1404,15 +1412,17 @@ export class MediaStreamHandler {
             // #region agent log
             fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:1159-lazy',message:'AI_GENERATION_DONE',data:genDoneData,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
             // #endregion
-            audioPlayout.notifyResponseFinished();
-            // Mark that OpenAI finished generating audio, but DON'T reset lastAssistantItem yet
-            // We need to wait for actual playback to complete (tracked via marks)
+
             responseAudioDone = true;
+
+            // Send a final mark only when the audio buffer is fully drained
+            audioPlayout.onDrained = () => {
+              if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
+                void sendMark(twilioWs, streamSid, markQueue);
+              }
+            };
             
-            // Send a final mark to know when playback truly finishes
-            if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
-              void sendMark(twilioWs, streamSid, markQueue);
-            }
+            audioPlayout.notifyResponseFinished();
           }
           if (event.type === 'input_audio_buffer.speech_started') {
             stopIdleTimer();
