@@ -540,8 +540,10 @@ export class MediaStreamHandler {
 
     const startIdleTimer = () => {
       stopIdleTimer();
+      logger.info('Starting idle timer', { twilioCallSid, timeoutMs: IDLE_TIMEOUT_MS });
       idleTimer = setTimeout(() => {
         nudgeCount++;
+        logger.info('Idle timer fired', { twilioCallSid, nudgeCount, openaiWsReady: openaiWs.readyState === WebSocket.OPEN });
         if (nudgeCount > 2) {
           logger.info('Max idle timeouts reached, dropping call', { twilioCallSid });
           if (twilioWs.readyState === WebSocket.OPEN) {
@@ -553,7 +555,22 @@ export class MediaStreamHandler {
         } else {
           logger.info('Idle timeout reached, sending nudge', { twilioCallSid, nudgeCount });
           if (openaiWs.readyState === WebSocket.OPEN) {
-            openaiWs.send(JSON.stringify({ type: 'response.create' }));
+            openaiWs.send(JSON.stringify({ type: 'response.create' }), (error) => {
+              if (error) {
+                logger.error('Failed to send response.create on idle timeout', { twilioCallSid, error });
+              } else {
+                logger.info('Successfully sent response.create on idle timeout', { twilioCallSid });
+                // Restart timer in case AI doesn't respond - this ensures we keep checking
+                startIdleTimer();
+              }
+            });
+          } else {
+            logger.warn('OpenAI WebSocket not open when idle timer fired', { 
+              twilioCallSid, 
+              readyState: openaiWs.readyState 
+            });
+            // Restart timer even if WebSocket is closed, in case it reconnects
+            startIdleTimer();
           }
         }
       }, IDLE_TIMEOUT_MS);
@@ -1063,13 +1080,16 @@ export class MediaStreamHandler {
       if (idleTimer) {
         clearTimeout(idleTimer);
         idleTimer = null;
+        logger.debug('Stopped idle timer (lazy)', { twilioCallSid });
       }
     };
 
     const startIdleTimer = () => {
       stopIdleTimer();
+      logger.info('Starting idle timer (lazy)', { twilioCallSid, timeoutMs: IDLE_TIMEOUT_MS });
       idleTimer = setTimeout(() => {
         nudgeCount++;
+        logger.info('Idle timer fired (lazy)', { twilioCallSid, nudgeCount, openaiWsReady: openaiWs?.readyState === WebSocket.OPEN });
         if (nudgeCount > 2) {
           logger.info('Max idle timeouts reached, dropping call (lazy)', { twilioCallSid });
           if (twilioWs.readyState === WebSocket.OPEN) {
@@ -1081,7 +1101,22 @@ export class MediaStreamHandler {
         } else {
           logger.info('Idle timeout reached, sending nudge (lazy)', { twilioCallSid, nudgeCount });
           if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
-            openaiWs.send(JSON.stringify({ type: 'response.create' }));
+            openaiWs.send(JSON.stringify({ type: 'response.create' }), (error) => {
+              if (error) {
+                logger.error('Failed to send response.create on idle timeout (lazy)', { twilioCallSid, error });
+              } else {
+                logger.info('Successfully sent response.create on idle timeout (lazy)', { twilioCallSid });
+                // Restart timer in case AI doesn't respond - this ensures we keep checking
+                startIdleTimer();
+              }
+            });
+          } else {
+            logger.warn('OpenAI WebSocket not open when idle timer fired (lazy)', { 
+              twilioCallSid, 
+              readyState: openaiWs?.readyState 
+            });
+            // Restart timer even if WebSocket is closed, in case it reconnects
+            startIdleTimer();
           }
         }
       }, IDLE_TIMEOUT_MS);
