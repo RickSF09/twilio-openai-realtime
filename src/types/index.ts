@@ -31,6 +31,11 @@ export interface CallConfig {
   turn_detection?: TurnDetectionConfig;
   tools?: ToolConfig[];
   metadata?: Record<string, any>;
+  /**
+   * If present, the call will skip AI/media-stream setup and Twilio will
+   * play this message with <Say> before hanging up.
+   */
+  static_message?: string;
   webhook_url: string;
 }
 
