@@ -6,6 +6,7 @@ import { openaiService } from './openaiService';
 import { n8nService } from './n8nService';
 import { sessionManager } from './sessionManager';
 import { twilioService } from './twilioService';
+import { completionTracker } from './completionTracker';
 import { 
   TwilioMediaEvent, 
   OpenAIRealtimeEvent, 
@@ -17,11 +18,6 @@ import {
   TokenUsageDetails,
   TokenUsageBreakdown,
 } from '../types';
-
-// Track calls that have already had completion processing to avoid duplicates
-const completedCallSids = new Set<string>();
-// Track calls that are currently being processed to avoid race conditions
-const processingCallSids = new Set<string>();
 
 const TOKEN_DETAIL_KEYS: Array<keyof TokenUsageBreakdown> = [
   'text_tokens',
@@ -1502,22 +1498,31 @@ export class MediaStreamHandler {
                 return;
               }
               const tempSession = sessionManager.getSession(tempId);
-              if (!tempSession) {
+              const existingSession = sessionManager.getSession(twilioCallSid);
+
+              if (tempSession) {
+                callConfig = tempSession.config;
+                from = tempSession.from;
+                to = tempSession.to;
+                // Create real session with actual CallSid
+                sessionManager.createSession(
+                  twilioCallSid,
+                  callConfig,
+                  'outbound',
+                  from,
+                  to
+                );
+                // Temp outbound sessions are only needed before Twilio reveals callSid.
+                sessionManager.removeSession(tempId);
+              } else if (existingSession) {
+                callConfig = existingSession.config;
+                from = existingSession.from;
+                to = existingSession.to;
+              } else {
                 logger.error('Temporary session not found for outbound lazy init', { tempId });
                 twilioWs.close(1008, 'Session not found');
                 return;
               }
-              callConfig = tempSession.config;
-              from = tempSession.from;
-              to = tempSession.to;
-              // Create real session with actual CallSid
-              sessionManager.createSession(
-                twilioCallSid,
-                callConfig,
-                'outbound',
-                from,
-                to
-              );
             } else {
               // Inbound call - extract from/to from customParameters
               from = params['from'];
@@ -1687,13 +1692,9 @@ async function handleCallEnd(
   toolCalls?: ToolCallPayload[]
 ): Promise<void> {
   // Idempotency guard - ensure we only process completion once per call
-  // Check both completed and currently processing calls
-  if (completedCallSids.has(twilioCallSid) || processingCallSids.has(twilioCallSid)) {
+  if (!completionTracker.begin(twilioCallSid)) {
     return;
   }
-
-  // Mark as processing immediately
-  processingCallSids.add(twilioCallSid);
 
   try {
     // Try to retrieve session data without removing it yet
@@ -1739,20 +1740,17 @@ async function handleCallEnd(
     );
 
     if (sent) {
-      completedCallSids.add(twilioCallSid);
+      completionTracker.complete(twilioCallSid);
       if (session) {
         sessionManager.removeSession(twilioCallSid);
       }
-      // Allow the set to be cleaned after a short delay to avoid unbounded growth
-      setTimeout(() => completedCallSids.delete(twilioCallSid), 5 * 60 * 1000);
     } else {
       logger.warn('Completion webhook failed to send; will allow retry on subsequent close/stop', { twilioCallSid });
     }
   } finally {
     // Always remove from processing set
-    processingCallSids.delete(twilioCallSid);
+    completionTracker.endAttempt(twilioCallSid);
   }
 }
 
 export const mediaStreamHandler = new MediaStreamHandler();
-

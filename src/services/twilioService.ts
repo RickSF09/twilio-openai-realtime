@@ -19,20 +19,42 @@ export class TwilioService {
     to: string,
     from: string | undefined,
     websocketUrl: string,
-    tempId: string
+    tempId: string,
+    staticMessage?: string,
+    callStatusCallbackUrl?: string,
+    streamStatusCallbackUrl?: string
   ): Promise<{ callSid: string; status: string }> {
     try {
       const fromNumber = from || config.twilio.phoneNumber;
+      const trimmedStaticMessage = staticMessage?.trim();
 
-      logger.info('Initiating outbound call', { to, from: fromNumber });
-
-      const call = await this.client.calls.create({
+      logger.info('Initiating outbound call', {
         to,
         from: fromNumber,
-        twiml: this.generateOutboundTwiML(websocketUrl, tempId),
+        mode: trimmedStaticMessage ? 'static_message' : 'ai_stream',
+      });
+
+      if (!trimmedStaticMessage && (!websocketUrl || !tempId)) {
+        throw new Error('websocketUrl and tempId are required when static_message is not provided');
+      }
+
+      const callCreateParams: any = {
+        to,
+        from: fromNumber,
+        twiml: trimmedStaticMessage
+          ? this.generateStaticMessageTwiML(trimmedStaticMessage)
+          : this.generateOutboundTwiML(websocketUrl, tempId, streamStatusCallbackUrl),
         // record: true, // Disable auto-record to allow manual dual-channel start
         // recordingChannels: 'dual',
-      });
+      };
+
+      if (callStatusCallbackUrl) {
+        callCreateParams.statusCallback = callStatusCallbackUrl;
+        callCreateParams.statusCallbackMethod = 'POST';
+        callCreateParams.statusCallbackEvent = ['initiated', 'ringing', 'answered', 'completed'];
+      }
+
+      const call = await this.client.calls.create(callCreateParams);
 
       logger.info('Outbound call initiated', { 
         callSid: call.sid, 
@@ -61,12 +83,30 @@ export class TwilioService {
   }
 
   /**
+   * Generate TwiML that plays a static message and hangs up.
+   */
+  generateStaticMessageTwiML(message: string): string {
+    const twiml = new twilio.twiml.VoiceResponse();
+    twiml.say(message);
+    twiml.hangup();
+    return twiml.toString();
+  }
+
+  /**
    * Generate TwiML for outbound calls with custom parameters
    */
-  generateOutboundTwiML(websocketUrl: string, tempId: string): string {
+  generateOutboundTwiML(
+    websocketUrl: string,
+    tempId: string,
+    streamStatusCallbackUrl?: string
+  ): string {
     const twiml = new twilio.twiml.VoiceResponse();
     const connect = twiml.connect();
-    const stream = connect.stream({ url: websocketUrl });
+    const stream = connect.stream({
+      url: websocketUrl,
+      statusCallback: streamStatusCallbackUrl,
+      statusCallbackMethod: 'POST',
+    });
     // Attach custom parameters so we can recover tempId/direction from 'start' event
     // Twilio will surface these under start.customParameters
     // @ts-ignore TwiML builder supports parameter on <Stream>
@@ -79,13 +119,23 @@ export class TwilioService {
   /**
    * Generate TwiML with greeting for inbound calls
    */
-  generateInboundTwiML(websocketUrl: string, callSid: string, from: string, to: string): string {
+  generateInboundTwiML(
+    websocketUrl: string,
+    callSid: string,
+    from: string,
+    to: string,
+    streamStatusCallbackUrl?: string
+  ): string {
     const twiml = new twilio.twiml.VoiceResponse();
     
     // Connect to Media Stream immediately
     // Note: Recording for inbound calls is started via API in the route handler
     const connect = twiml.connect();
-    const stream = connect.stream({ url: websocketUrl });
+    const stream = connect.stream({
+      url: websocketUrl,
+      statusCallback: streamStatusCallbackUrl,
+      statusCallbackMethod: 'POST',
+    });
     
     // Attach custom parameters so we can identify this as inbound
     // Twilio will surface these under start.customParameters
