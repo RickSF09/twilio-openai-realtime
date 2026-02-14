@@ -131,9 +131,6 @@ class TwilioAudioPlayout {
       const drift = now - this.nextSendTime;
       if (drift > 10) { // Log significant drift (>10ms)
         logger.warn('Playout timer drift detected', { drift, targetTime: this.nextSendTime, actualTime: now });
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:125',message:'TIMER_DRIFT_DETECTED',data:{drift,targetTime:this.nextSendTime,actualTime:now},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
       }
     }
 
@@ -496,6 +493,11 @@ export class MediaStreamHandler {
     from?: string,
     to?: string
   ): Promise<void> {
+    logger.addContext({
+      twilio_call_sid: twilioCallSid,
+      direction,
+    });
+
     logger.info('Handling media stream connection', { twilioCallSid, direction });
 
     // Create call session
@@ -611,6 +613,12 @@ export class MediaStreamHandler {
 
     // Setup OpenAI WebSocket handlers
     openaiWs.on('open', async () => {
+      logger.addContext({
+        twilio_call_sid: twilioCallSid,
+        direction,
+        stream_sid: streamSid || undefined,
+      });
+
       logger.info('OpenAI WebSocket connected');
       
       // Periodically log memory and event loop health in production
@@ -621,9 +629,6 @@ export class MediaStreamHandler {
           const lag = performance.now() - start - 100; // 100ms expected
           const healthData = {rss:Math.round(memory.rss/1024/1024),heapUsed:Math.round(memory.heapUsed/1024/1024),eventLoopLag:Math.round(lag)};
           logger.info('SERVER_HEALTH_REPORT', healthData);
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:517',message:'SERVER_HEALTH_REPORT',data:healthData,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,B'})}).catch(()=>{});
-          // #endregion
           if (lag > 50) {
             logger.warn('Significant event loop lag detected', { lag: Math.round(lag) });
           }
@@ -646,6 +651,12 @@ export class MediaStreamHandler {
 
     openaiWs.on('message', async (data: WebSocket.Data) => {
       try {
+        logger.addContext({
+          twilio_call_sid: twilioCallSid,
+          direction,
+          stream_sid: streamSid || undefined,
+        });
+
         const event: OpenAIRealtimeEvent = JSON.parse(data.toString());
 
         // Log conversation item additions for debugging
@@ -862,9 +873,6 @@ export class MediaStreamHandler {
         if (event.type === 'response.output_audio.done') {
           const genDoneData = {markQueueLength:markQueue.length};
           logger.info('AI_GENERATION_DONE', genDoneData);
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:743',message:'AI_GENERATION_DONE',data:genDoneData,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-          // #endregion
 
           responseAudioDone = true;
 
@@ -884,9 +892,6 @@ export class MediaStreamHandler {
           nudgeCount = 0;
           const interruptionData = {lastAssistantItem,responseStartTimestamp,responseAudioDone,markQueueLength:markQueue.length};
           logger.info('INTERRUPTION_RECEIVED', interruptionData);
-          // #region agent log
-          fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:772',message:'INTERRUPTION_RECEIVED',data:interruptionData,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-          // #endregion
           logger.debug('User speech started - handling interruption');
           
           if (lastAssistantItem && responseStartTimestamp !== null) {
@@ -940,11 +945,21 @@ export class MediaStreamHandler {
     twilioWs.on('message', async (data: WebSocket.Data) => {
       try {
         const message: TwilioMediaEvent = JSON.parse(data.toString());
+        logger.addContext({
+          twilio_call_sid: twilioCallSid,
+          direction,
+          stream_sid: streamSid || undefined,
+        });
 
         switch (message.event) {
           case 'start':
             streamSid = message.start?.streamSid || null;
             const realCallSid = message.start?.callSid;
+            logger.addContext({
+              twilio_call_sid: realCallSid || twilioCallSid,
+              direction,
+              stream_sid: streamSid || undefined,
+            });
             logger.info('Twilio stream started', { streamSid, callSid: realCallSid });
             
             if (streamSid) {
@@ -1165,6 +1180,12 @@ export class MediaStreamHandler {
       openaiWs = ws;
 
       ws.on('open', async () => {
+        logger.addContext({
+          twilio_call_sid: twilioCallSid || undefined,
+          direction,
+          stream_sid: streamSid || undefined,
+        });
+
         logger.info('OpenAI WebSocket connected');
 
         // Periodically log memory and event loop health in production
@@ -1175,9 +1196,6 @@ export class MediaStreamHandler {
             const lag = performance.now() - start - 100; // 100ms expected
             const healthData = {rss:Math.round(memory.rss/1024/1024),heapUsed:Math.round(memory.heapUsed/1024/1024),eventLoopLag:Math.round(lag)};
             logger.info('SERVER_HEALTH_REPORT (lazy)', healthData);
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:938-lazy',message:'SERVER_HEALTH_REPORT',data:healthData,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A,B'})}).catch(()=>{});
-            // #endregion
             if (lag > 50) {
               logger.warn('Significant event loop lag detected (lazy)', { lag: Math.round(lag) });
             }
@@ -1197,6 +1215,12 @@ export class MediaStreamHandler {
 
       ws.on('message', async (data: WebSocket.Data) => {
         try {
+          logger.addContext({
+            twilio_call_sid: twilioCallSid || undefined,
+            direction,
+            stream_sid: streamSid || undefined,
+          });
+
           const event: OpenAIRealtimeEvent = JSON.parse(data.toString());
 
           // Log conversation item additions for debugging
@@ -1405,9 +1429,6 @@ export class MediaStreamHandler {
           if (event.type === 'response.output_audio.done') {
             const genDoneData = {markQueueLength:markQueue.length};
             logger.info('AI_GENERATION_DONE (lazy)', genDoneData);
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:1159-lazy',message:'AI_GENERATION_DONE',data:genDoneData,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-            // #endregion
 
             responseAudioDone = true;
 
@@ -1425,9 +1446,6 @@ export class MediaStreamHandler {
             nudgeCount = 0;
             const interruptionData = {lastAssistantItem,responseStartTimestamp,responseAudioDone,markQueueLength:markQueue.length};
             logger.info('INTERRUPTION_RECEIVED (lazy)', interruptionData);
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/887d4abd-dc84-4c10-b9de-e28c1a2adb42',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'mediaStreamHandler.ts:1174-lazy',message:'INTERRUPTION_RECEIVED',data:interruptionData,timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
-            // #endregion
             logger.debug('User speech started - handling interruption');
             if (lastAssistantItem && responseStartTimestamp !== null) {
               const elapsedTime = latestMediaTimestamp - responseStartTimestamp;
@@ -1471,6 +1489,11 @@ export class MediaStreamHandler {
     twilioWs.on('message', async (data: WebSocket.Data) => {
       try {
         const message: TwilioMediaEvent = JSON.parse(data.toString());
+        logger.addContext({
+          twilio_call_sid: twilioCallSid || undefined,
+          direction,
+          stream_sid: streamSid || undefined,
+        });
         switch (message.event) {
           case 'start': {
             streamSid = message.start?.streamSid || null;
@@ -1479,6 +1502,12 @@ export class MediaStreamHandler {
             const tempId = params['tempId'];
             const dir = (params['direction'] as 'inbound' | 'outbound') || 'outbound';
             direction = dir;
+            logger.addContext({
+              twilio_call_sid: twilioCallSid || undefined,
+              direction,
+              stream_sid: streamSid || undefined,
+              temp_id: tempId,
+            });
             logger.info('Twilio stream started (lazy init)', { streamSid, twilioCallSid, direction, tempId });
 
             if (!twilioCallSid) {

@@ -78,6 +78,11 @@ async function sendCompletionFromSession(
   fallbackFrom?: string,
   fallbackTo?: string
 ): Promise<void> {
+  logger.addContext({
+    twilio_call_sid: callSid,
+    call_status: status,
+  });
+
   if (!completionTracker.begin(callSid)) {
     return;
   }
@@ -148,6 +153,13 @@ router.post('/incoming-call', async (req: Request, res: Response) => {
     const from = req.body.From;
     const to = req.body.To;
     let prefetchedConfig: CallConfig | null = null;
+
+    logger.addContext({
+      twilio_call_sid: callSid,
+      from,
+      to,
+      direction: 'inbound',
+    });
 
     logger.info('Incoming call received', { callSid, from, to });
 
@@ -259,6 +271,12 @@ router.post('/outbound-call', async (req: Request, res: Response) => {
       from: callRequest.from 
     });
 
+    logger.addContext({
+      to: callRequest.to,
+      from: callRequest.from,
+      direction: 'outbound',
+    });
+
     let tempId = '';
     let websocketUrl = '';
     const baseUrl = getHttpBaseUrl(req);
@@ -307,6 +325,8 @@ router.post('/outbound-call', async (req: Request, res: Response) => {
       callStatusCallbackUrl,
       streamStatusCallbackUrl
     );
+
+    logger.addContext({ twilio_call_sid: callSid });
 
     if (staticMessage) {
       sessionManager.createSession(
@@ -374,6 +394,11 @@ router.post('/twilio/call-status', async (req: Request, res: Response) => {
     const callSid = typeof req.body.CallSid === 'string' ? req.body.CallSid : '';
     const callStatus = normalizeCallStatus(req.body.CallStatus);
 
+    logger.addContext({
+      twilio_call_sid: callSid,
+      call_status: callStatus,
+    });
+
     logger.info('Twilio call status callback received', {
       callSid,
       callStatus,
@@ -413,6 +438,12 @@ router.post('/twilio/stream-status', async (req: Request, res: Response) => {
       ? req.body.StreamEvent.toLowerCase()
       : '';
     const streamError = typeof req.body.StreamError === 'string' ? req.body.StreamError : undefined;
+
+    logger.addContext({
+      twilio_call_sid: callSid,
+      stream_sid: streamSid,
+      stream_event: streamEvent,
+    });
 
     logger.info('Twilio stream status callback received', {
       callSid,

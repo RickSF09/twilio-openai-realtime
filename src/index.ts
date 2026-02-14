@@ -1,5 +1,6 @@
 import express from 'express';
 import { createServer } from 'http';
+import { randomUUID } from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { config } from './utils/config';
 import { logger } from './utils/logger';
@@ -11,25 +12,102 @@ import { N8nConfigRequest } from './types';
 
 // Create Express app
 const app = express();
+app.set('trust proxy', true);
 
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Request logging middleware
-app.use((req, _res, next) => {
-  const headers = { ...req.headers };
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
 
-  if (headers.authorization) {
-    headers.authorization = '[REDACTED]';
+function asString(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (typeof value === 'number' || typeof value === 'bigint') {
+    return String(value);
+  }
+  return undefined;
+}
+
+function summarizeBody(body: unknown): Record<string, unknown> {
+  const bodyRecord = asRecord(body);
+  if (!bodyRecord) {
+    return {
+      body_type: body === null ? 'null' : typeof body,
+    };
   }
 
-  logger.info(`${req.method} ${req.originalUrl}`, {
-    ip: req.ip,
-    userAgent: req.headers['user-agent'],
-    query: req.query,
-    headers,
-    body: req.body,
+  const keys = Object.keys(bodyRecord);
+  return {
+    body_keys: keys.slice(0, 20),
+    body_key_count: keys.length,
+  };
+}
+
+function extractRequestContext(req: express.Request): Record<string, unknown> {
+  const body = asRecord(req.body);
+  const query = asRecord(req.query);
+
+  return {
+    twilio_call_sid:
+      asString(body?.CallSid)
+      ?? asString(body?.callSid)
+      ?? asString(body?.twilio_call_sid)
+      ?? asString(query?.callSid),
+    stream_sid:
+      asString(body?.StreamSid)
+      ?? asString(body?.streamSid)
+      ?? asString(body?.stream_sid),
+    direction:
+      asString(body?.Direction)
+      ?? asString(body?.direction)
+      ?? asString(query?.direction),
+    temp_id:
+      asString(body?.tempId)
+      ?? asString(body?.temp_id)
+      ?? asString(query?.tempId),
+  };
+}
+
+// Request logging middleware
+app.use((req, res, next) => {
+  const startedAt = process.hrtime.bigint();
+  const incomingRequestId = asString(req.headers['x-request-id']);
+  const requestId = incomingRequestId || randomUUID();
+
+  res.setHeader('x-request-id', requestId);
+
+  const requestContext = {
+    request_id: requestId,
+    http_method: req.method,
+    http_path: req.path,
+    ...extractRequestContext(req),
+  };
+
+  logger.runWithContext(requestContext, () => {
+    logger.info('HTTP request started', {
+      ip: req.ip,
+      user_agent: req.headers['user-agent'],
+      query: req.query,
+      ...summarizeBody(req.body),
+    });
+  });
+
+  res.on('finish', () => {
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+    logger.runWithContext(requestContext, () => {
+      logger.info('HTTP request completed', {
+        status_code: res.statusCode,
+        duration_ms: Number(durationMs.toFixed(2)),
+      });
+    });
   });
 
   next();
@@ -49,97 +127,117 @@ const wss = new WebSocketServer({
 
 // WebSocket connection handler
 wss.on('connection', async (ws: WebSocket, req) => {
-  logger.info('WebSocket connection established', { 
-    url: req.url,
-    headers: req.headers 
-  });
+  const connectionId = randomUUID();
+  const requestId = asString(req.headers['x-request-id']) || connectionId;
 
-  try {
-    // Parse query parameters
-    const url = new URL(req.url || '', `http://${req.headers.host}`);
-    const params = url.searchParams;
-    
-    const callSid = params.get('callSid');
-    const tempId = params.get('tempId');
-    const direction = params.get('direction') as 'inbound' | 'outbound' | null;
-    const from = params.get('from');
-    const to = params.get('to');
+  await logger.runWithContext(
+    {
+      request_id: requestId,
+      connection_id: connectionId,
+      transport: 'websocket',
+    },
+    async () => {
+      logger.info('WebSocket connection established', {
+        url: req.url,
+        user_agent: req.headers['user-agent'],
+        forwarded_for: req.headers['x-forwarded-for'],
+      });
 
-    let actualCallSid: string;
-    let callDirection: 'inbound' | 'outbound';
-    let callConfig;
+      try {
+        // Parse query parameters
+        const url = new URL(req.url || '', `http://${req.headers.host}`);
+        const params = url.searchParams;
 
-    if (tempId && direction === 'outbound') {
-      // Outbound call - get config from session manager
-      callDirection = 'outbound';
-      
-      // Wait for actual CallSid from Twilio 'start' event
-      // For now, use tempId and update later
-      const tempSession = sessionManager.getSession(tempId);
-      
-      if (!tempSession) {
-        logger.error('Temporary session not found for outbound call', { tempId });
-        ws.close(1008, 'Session not found');
-        return;
-      }
+        const callSid = params.get('callSid');
+        const tempId = params.get('tempId');
+        const direction = params.get('direction') as 'inbound' | 'outbound' | null;
+        const from = params.get('from');
+        const to = params.get('to');
 
-      callConfig = tempSession.config;
-      actualCallSid = tempId; // Will be updated when we receive 'start' event
+        let actualCallSid: string;
+        let callDirection: 'inbound' | 'outbound';
+        let callConfig;
 
-      // We'll handle the actual CallSid update in the media stream handler
-      logger.info('Outbound call WebSocket connected', { tempId });
-    } else if (callSid && from && to) {
-      // Inbound call
-      callDirection = 'inbound';
-      actualCallSid = callSid;
+        if (tempId && direction === 'outbound') {
+          logger.addContext({ temp_id: tempId, direction: 'outbound' });
 
-      // Prefer prefetched session config if available (created in /incoming-call)
-      const existingSession = sessionManager.getSession(callSid);
-      if (existingSession) {
-        callConfig = existingSession.config;
-        logger.info('Using prefetched inbound config from session', { callSid });
-      } else {
-        // Fallback: fetch configuration from n8n webhook
-        const n8nWebhookUrl = config.n8n.defaultWebhookUrl;
-        
-        if (n8nWebhookUrl) {
-          const configRequest: N8nConfigRequest = {
-            event: 'call.started',
+          // Outbound call - get config from session manager
+          callDirection = 'outbound';
+
+          // Wait for actual CallSid from Twilio 'start' event
+          // For now, use tempId and update later
+          const tempSession = sessionManager.getSession(tempId);
+
+          if (!tempSession) {
+            logger.error('Temporary session not found for outbound call', { tempId });
+            ws.close(1008, 'Session not found');
+            return;
+          }
+
+          callConfig = tempSession.config;
+          actualCallSid = tempId; // Will be updated when we receive 'start' event
+
+          // We'll handle the actual CallSid update in the media stream handler
+          logger.info('Outbound call WebSocket connected', { tempId });
+        } else if (callSid && from && to) {
+          logger.addContext({
             twilio_call_sid: callSid,
-            from: decodeURIComponent(from),
-            to: decodeURIComponent(to),
-            timestamp: new Date().toISOString(),
-          };
+            direction: 'inbound',
+          });
 
-          callConfig = await n8nService.fetchConfigOnce(n8nWebhookUrl, configRequest);
+          // Inbound call
+          callDirection = 'inbound';
+          actualCallSid = callSid;
+
+          // Prefer prefetched session config if available (created in /incoming-call)
+          const existingSession = sessionManager.getSession(callSid);
+          if (existingSession) {
+            callConfig = existingSession.config;
+            logger.info('Using prefetched inbound config from session', { callSid });
+          } else {
+            // Fallback: fetch configuration from n8n webhook
+            const n8nWebhookUrl = config.n8n.defaultWebhookUrl;
+
+            if (n8nWebhookUrl) {
+              const configRequest: N8nConfigRequest = {
+                event: 'call.started',
+                twilio_call_sid: callSid,
+                from: decodeURIComponent(from),
+                to: decodeURIComponent(to),
+                timestamp: new Date().toISOString(),
+              };
+
+              callConfig = await n8nService.fetchConfigOnce(n8nWebhookUrl, configRequest);
+            } else {
+              // Use default config if no webhook URL configured
+              callConfig = n8nService.getDefaultConfig('');
+              logger.warn('No default n8n webhook URL configured, using default config');
+            }
+          }
+
+          logger.info('Inbound call WebSocket connected', { callSid, from, to });
         } else {
-          // Use default config if no webhook URL configured
-          callConfig = n8nService.getDefaultConfig('');
-          logger.warn('No default n8n webhook URL configured, using default config');
+          // Allow connection without query params; we'll initialize on Twilio 'start' using customParameters
+          logger.warn('WebSocket connected without expected query parameters; deferring initialization');
+          await mediaStreamHandler.handleConnectionLazyInit(ws);
+          return;
         }
+
+        // Handle the media stream
+        await mediaStreamHandler.handleConnection(
+          ws,
+          callConfig,
+          actualCallSid,
+          callDirection,
+          from ? decodeURIComponent(from) : undefined,
+          to ? decodeURIComponent(to) : undefined
+        );
+      } catch (error) {
+        logger.error('Error handling WebSocket connection', error);
+        ws.close(1011, 'Internal server error');
       }
-
-      logger.info('Inbound call WebSocket connected', { callSid, from, to });
-    } else {
-      // Allow connection without query params; we'll initialize on Twilio 'start' using customParameters
-      logger.warn('WebSocket connected without expected query parameters; deferring initialization');
-      await mediaStreamHandler.handleConnectionLazyInit(ws);
-      return;
     }
-
-    // Handle the media stream
-    await mediaStreamHandler.handleConnection(
-      ws,
-      callConfig,
-      actualCallSid,
-      callDirection,
-      from ? decodeURIComponent(from) : undefined,
-      to ? decodeURIComponent(to) : undefined
-    );
-  } catch (error) {
-    logger.error('Error handling WebSocket connection', error);
-    ws.close(1011, 'Internal server error');
-  }
+  );
 });
 
 wss.on('error', (error) => {
