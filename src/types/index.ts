@@ -120,6 +120,9 @@ export interface OpenAISessionConfig {
       format: {
         type: string;
       };
+      noise_reduction?: {
+        type: 'near_field' | 'far_field';
+      } | null;
       turn_detection: TurnDetectionConfig;
       /**
        * Explicit transcription configuration for input audio.

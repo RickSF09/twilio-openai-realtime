@@ -55,6 +55,9 @@ export class OpenAIRealtimeService {
           format: {
             type: 'audio/pcmu', // μ-law for Twilio
           },
+          noise_reduction: {
+            type: 'far_field',
+          },
           // Explicitly disable model-side transcription; we transcribe in n8n post-call
           transcription: null,
           turn_detection: callConfig.turn_detection || {
@@ -100,7 +103,7 @@ export class OpenAIRealtimeService {
     // Add truncation strategy
     sessionConfig.truncation = {
       type: 'retention_ratio',
-      retention_ratio: 0.8,
+      retention_ratio: 0.6,
     };
 
     return sessionConfig;
