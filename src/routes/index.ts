@@ -149,29 +149,30 @@ router.get('/', (_req: Request, res: Response) => {
  */
 router.get('/ready', (_req: Request, res: Response) => {
   const forcedError = config.readiness.forceError.trim();
+  const requiredConfigHealthy =
+    Boolean(config.twilio.accountSid)
+    && Boolean(config.twilio.authToken)
+    && Boolean(config.twilio.phoneNumber)
+    && Boolean(config.openai.apiKey)
+    && Boolean(config.n8n.webhookAuth);
 
-  const checks = [
+  const checks: Array<{ name: string; healthy: boolean; error?: string }> = [
     {
       name: 'required_config',
-      healthy:
-        Boolean(config.twilio.accountSid)
-        && Boolean(config.twilio.authToken)
-        && Boolean(config.twilio.phoneNumber)
-        && Boolean(config.openai.apiKey)
-        && Boolean(config.n8n.webhookAuth),
-      error: 'Required config missing',
+      healthy: requiredConfigHealthy,
+      ...(requiredConfigHealthy ? {} : { error: 'Required config missing' }),
     },
     {
       name: 'forced_error',
       healthy: forcedError.length === 0,
-      error: forcedError || 'none',
+      ...(forcedError.length > 0 ? { error: forcedError } : {}),
     },
   ];
 
   const ready = checks.every((check) => check.healthy);
   const failingChecks = checks
     .filter((check) => !check.healthy)
-    .map((check) => `${check.name}: ${check.error}`)
+    .map((check) => `${check.name}: ${check.error || 'unknown error'}`)
     .join('; ');
 
   const report = {
