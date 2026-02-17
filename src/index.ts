@@ -103,10 +103,22 @@ app.use((req, res, next) => {
   res.on('finish', () => {
     const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
     logger.runWithContext(requestContext, () => {
-      logger.info('HTTP request completed', {
+      const payload = {
         status_code: res.statusCode,
         duration_ms: Number(durationMs.toFixed(2)),
-      });
+      };
+
+      if (res.statusCode >= 500) {
+        logger.error('HTTP request completed with server error', payload);
+        return;
+      }
+
+      if (res.statusCode >= 400) {
+        logger.warn('HTTP request completed with client error', payload);
+        return;
+      }
+
+      logger.info('HTTP request completed', payload);
     });
   });
 
@@ -115,6 +127,29 @@ app.use((req, res, next) => {
 
 // Routes
 app.use('/', routes);
+
+// Final request error handler (captures uncaught route/middleware errors)
+app.use((error: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const requestContext = {
+    request_id: asString(req.headers['x-request-id']) || randomUUID(),
+    http_method: req.method,
+    http_path: req.path,
+    ...extractRequestContext(req),
+  };
+
+  logger.runWithContext(requestContext, () => {
+    logger.error('Unhandled request error', error);
+  });
+
+  if (res.headersSent) {
+    return;
+  }
+
+  res.status(500).json({
+    success: false,
+    error: 'Internal server error',
+  });
+});
 
 // Create HTTP server
 const server = createServer(app);
@@ -244,6 +279,19 @@ wss.on('error', (error) => {
   logger.error('WebSocket server error', error);
 });
 
+server.on('error', (error) => {
+  logger.error('HTTP server error', error);
+});
+
+const heartbeatTimer = config.alerts.heartbeatIntervalSeconds > 0
+  ? setInterval(() => {
+      logger.info('Service heartbeat', {
+        event_type: 'service_heartbeat',
+        service: config.alerts.serviceName,
+      });
+    }, config.alerts.heartbeatIntervalSeconds * 1_000)
+  : null;
+
 // Start server
 server.listen(config.server.port, () => {
   logger.info(`Server started on port ${config.server.port}`, {
@@ -260,6 +308,9 @@ server.listen(config.server.port, () => {
 // Graceful shutdown
 process.on('SIGTERM', () => {
   logger.info('SIGTERM received, shutting down gracefully');
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+  }
   server.close(() => {
     logger.info('Server closed');
     process.exit(0);
@@ -268,6 +319,9 @@ process.on('SIGTERM', () => {
 
 process.on('SIGINT', () => {
   logger.info('SIGINT received, shutting down gracefully');
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+  }
   server.close(() => {
     logger.info('Server closed');
     process.exit(0);

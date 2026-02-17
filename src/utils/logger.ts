@@ -1,5 +1,6 @@
 import { config } from './config';
 import { addLogContext, getLogContext, runWithLogContext } from './logContext';
+import { alertsService } from '../services/alertsService';
 
 type LogLevel = 'info' | 'warn' | 'error' | 'debug';
 type JsonRecord = Record<string, unknown>;
@@ -128,6 +129,7 @@ class Logger {
 
     if (level === 'error') {
       console.error(line);
+      void alertsService.notifyFromLog(payload);
       return;
     }
 

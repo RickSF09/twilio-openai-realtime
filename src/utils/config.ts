@@ -2,6 +2,41 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
+function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
+  if (value === undefined) {
+    return defaultValue;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function parseNonNegativeInt(value: string | undefined, defaultValue: number): number {
+  if (value === undefined || value.trim() === '') {
+    return defaultValue;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    return defaultValue;
+  }
+
+  return parsed;
+}
+
+function parseSeverity(value: string | undefined): 'P1' | 'P2' | 'P3' {
+  if (!value) {
+    return 'P2';
+  }
+
+  const normalized = value.trim().toUpperCase();
+  if (normalized === 'P1' || normalized === 'P2' || normalized === 'P3') {
+    return normalized;
+  }
+
+  return 'P2';
+}
+
 export const config = {
   // Twilio
   twilio: {
@@ -32,6 +67,22 @@ export const config = {
     voice: process.env.DEFAULT_VOICE || 'alloy',
     temperature: parseFloat(process.env.DEFAULT_TEMPERATURE || '0.8'),
     model: process.env.DEFAULT_MODEL || 'gpt-realtime',
+  },
+
+  // Alerting
+  alerts: {
+    enabled: parseBoolean(process.env.ALERTS_ENABLED, true),
+    slackWebhookUrl: process.env.ALERTS_SLACK_WEBHOOK_URL || '',
+    defaultSeverity: parseSeverity(process.env.ALERTS_DEFAULT_SEVERITY),
+    minIntervalSeconds: parseNonNegativeInt(process.env.ALERTS_MIN_INTERVAL_SECONDS, 600),
+    serviceName: process.env.ALERTS_SERVICE_NAME || 'twilio-openai-realtime',
+    includeFullPayload: parseBoolean(process.env.ALERTS_INCLUDE_FULL_PAYLOAD, true),
+    heartbeatIntervalSeconds: parseNonNegativeInt(process.env.HEARTBEAT_INTERVAL_SECONDS, 300),
+  },
+
+  // Readiness
+  readiness: {
+    forceError: process.env.READINESS_FORCE_ERROR || '',
   },
 };
 

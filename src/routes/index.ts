@@ -145,6 +145,54 @@ router.get('/', (_req: Request, res: Response) => {
 });
 
 /**
+ * Readiness endpoint
+ */
+router.get('/ready', (_req: Request, res: Response) => {
+  const forcedError = config.readiness.forceError.trim();
+
+  const checks = [
+    {
+      name: 'required_config',
+      healthy:
+        Boolean(config.twilio.accountSid)
+        && Boolean(config.twilio.authToken)
+        && Boolean(config.twilio.phoneNumber)
+        && Boolean(config.openai.apiKey)
+        && Boolean(config.n8n.webhookAuth),
+      error: 'Required config missing',
+    },
+    {
+      name: 'forced_error',
+      healthy: forcedError.length === 0,
+      error: forcedError || 'none',
+    },
+  ];
+
+  const ready = checks.every((check) => check.healthy);
+  const failingChecks = checks
+    .filter((check) => !check.healthy)
+    .map((check) => `${check.name}: ${check.error}`)
+    .join('; ');
+
+  const report = {
+    status: ready ? 'ready' : 'not_ready',
+    service: config.alerts.serviceName,
+    timestamp: new Date().toISOString(),
+    activeSessions: sessionManager.getSessionCount(),
+    checks,
+  };
+
+  if (!ready) {
+    logger.error('Readiness check failed', {
+      failing_checks: failingChecks,
+      readiness_payload: report,
+    });
+  }
+
+  return res.status(ready ? 200 : 503).json(report);
+});
+
+/**
  * Incoming call webhook from Twilio
  */
 router.post('/incoming-call', async (req: Request, res: Response) => {
