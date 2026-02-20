@@ -24,6 +24,19 @@ function parseNonNegativeInt(value: string | undefined, defaultValue: number): n
   return parsed;
 }
 
+function parsePositiveInt(value: string | undefined, defaultValue: number): number {
+  if (value === undefined || value.trim() === '') {
+    return defaultValue;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return defaultValue;
+  }
+
+  return parsed;
+}
+
 function parseSeverity(value: string | undefined): 'P1' | 'P2' | 'P3' {
   if (!value) {
     return 'P2';
@@ -54,6 +67,11 @@ export const config = {
   n8n: {
     webhookAuth: process.env.N8N_WEBHOOK_AUTH || '',
     defaultWebhookUrl: process.env.DEFAULT_N8N_WEBHOOK_URL || '',
+    requestTimeoutMs: parsePositiveInt(process.env.N8N_REQUEST_TIMEOUT_MS, 35_000),
+    inboundPrefetchTimeoutMs: Math.min(
+      parsePositiveInt(process.env.N8N_INBOUND_PREFETCH_TIMEOUT_MS, 14_000),
+      14_000
+    ),
   },
   
   // Server

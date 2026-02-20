@@ -51,6 +51,8 @@ Before you begin, ensure you have the following:
     | `TWILIO_PHONE_NUMBER`     | Your Twilio phone number in E.164 format (e.g., +1234567890).               |
     | `OPENAI_API_KEY`          | Your OpenAI API key.                                                        |
     | `N8N_WEBHOOK_AUTH`        | The authentication header value for your n8n webhooks (`lgvaibot0902!`).    |
+    | `N8N_REQUEST_TIMEOUT_MS`  | Timeout (ms) for server->n8n HTTP calls (defaults to `35000`).              |
+    | `N8N_INBOUND_PREFETCH_TIMEOUT_MS` | Max prefetch wait (ms) before replying TwiML on inbound calls (capped at `14000`). |
     | `PORT`                    | The port for the server to run on (defaults to `5050`).                     |
     | `DEFAULT_N8N_WEBHOOK_URL` | The default n8n webhook URL to fetch configuration from for inbound calls.  |
 
@@ -89,11 +91,14 @@ Initiates an outbound call with a specified configuration.
   "from": "+1987654321",
   "voice": "marin",
   "instructions": "You are a helpful assistant.",
+  "static_message": "We cannot connect your call right now. Please try again tomorrow.",
   "welcome_greeting": "Hello, how can I help you today?",
   "webhook_url": "https://your-n8n-instance.com/webhook/call-completed",
   "metadata": { "user_id": "123" }
 }
 ```
+
+`static_message` is optional. When provided, Twilio will play that message using `<Say>` and then hang up, without opening the AI media stream.
 
 **Response:**
 
@@ -109,6 +114,7 @@ Initiates an outbound call with a specified configuration.
 ### `POST /incoming-call`
 
 This is the webhook endpoint for Twilio. It returns TwiML to connect the call to the server's WebSocket for media streaming.
+The server keeps prefetch wait below Twilio's call webhook timeout ceiling and continues fetching config in the background if needed.
 
 ### `WS /media-stream`
 
@@ -138,11 +144,14 @@ Your n8n webhook should respond with a JSON object containing the desired call c
 {
   "voice": "shimmer",
   "instructions": "You are a friendly virtual assistant for a retail store.",
+  "static_message": "You have reached your plan call limit. Please contact support.",
   "welcome_greeting": "Thanks for calling! How can I help you shop today?",
   "webhook_url": "https://your-n8n-instance.com/webhook/call-completed",
   "metadata": { "customer_tier": "gold" }
 }
 ```
+
+For inbound calls, if `static_message` is returned in this webhook response (during prefetch), the server returns TwiML that says the message and hangs up instead of connecting to OpenAI.
 
 ### N8N Completion Webhook (Request)
 

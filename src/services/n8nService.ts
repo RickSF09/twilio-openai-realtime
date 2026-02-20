@@ -44,7 +44,7 @@ export class N8nService {
           'Content-Type': 'application/json',
           'Authorization': config.n8n.webhookAuth,
         },
-        timeout: 20000, // Allow up to 20 seconds for n8n to respond
+        timeout: config.n8n.requestTimeoutMs,
       });
 
       logger.info('Configuration fetched successfully from n8n');
@@ -125,7 +125,7 @@ export class N8nService {
           'Content-Type': 'application/json',
           'Authorization': config.n8n.webhookAuth,
         },
-        timeout: 20000,
+        timeout: config.n8n.requestTimeoutMs,
       });
 
       logger.info('Completion webhook sent successfully');
