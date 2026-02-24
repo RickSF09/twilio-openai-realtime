@@ -20,9 +20,10 @@ export class OpenAIRealtimeService {
    */
   createConnection(_temperature?: number): WebSocket {
     // Note: temperature parameter is kept for backwards compatibility but not used
-    const url = `wss://api.openai.com/v1/realtime?model=gpt-realtime`;
+    const model = config.defaults.model;
+    const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`;
     
-    logger.info('Creating OpenAI Realtime WebSocket connection');
+    logger.info('Creating OpenAI Realtime WebSocket connection', { model });
 
     const ws = new WebSocket(url, {
       headers: {
