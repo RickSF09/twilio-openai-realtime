@@ -937,8 +937,13 @@ export class MediaStreamHandler {
       logger.error('OpenAI WebSocket error', error);
     });
 
-    openaiWs.on('close', () => {
-      logger.info('OpenAI WebSocket closed');
+    openaiWs.on('close', (code, reason) => {
+      logger.info('OpenAI WebSocket closed', {
+        code,
+        reason: reason?.toString('utf8') || '',
+        twilioCallSid,
+        streamSid,
+      });
     });
 
     // Setup Twilio WebSocket handlers
@@ -1481,8 +1486,13 @@ export class MediaStreamHandler {
         logger.error('OpenAI WebSocket error', error);
       });
 
-      ws.on('close', () => {
-        logger.info('OpenAI WebSocket closed');
+      ws.on('close', (code, reason) => {
+        logger.info('OpenAI WebSocket closed', {
+          code,
+          reason: reason?.toString('utf8') || '',
+          twilioCallSid,
+          streamSid,
+        });
       });
     };
 
