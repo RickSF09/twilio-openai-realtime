@@ -55,6 +55,8 @@ Before you begin, ensure you have the following:
     | `N8N_INBOUND_PREFETCH_TIMEOUT_MS` | Max prefetch wait (ms) before replying TwiML on inbound calls (capped at `14000`). |
     | `PORT`                    | The port for the server to run on (defaults to `5050`).                     |
     | `DEFAULT_N8N_WEBHOOK_URL` | The default n8n webhook URL to fetch configuration from for inbound calls.  |
+    | `REALTIME_SESSION_LIMIT_SECONDS` | Realtime session hard limit in seconds used for graceful warning scheduling (defaults to `3600`). |
+    | `REALTIME_GRACE_WARNING_BEFORE_END_SECONDS` | Seconds before the session limit when the assistant gets a wrap-up warning (defaults to `300`). |
 
 ## Running the Application
 

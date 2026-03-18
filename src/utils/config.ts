@@ -87,6 +87,15 @@ export const config = {
     model: process.env.DEFAULT_MODEL || 'gpt-realtime',
   },
 
+  // Realtime session lifecycle
+  realtime: {
+    sessionLimitSeconds: parsePositiveInt(process.env.REALTIME_SESSION_LIMIT_SECONDS, 3_600),
+    graceWarningBeforeEndSeconds: parseNonNegativeInt(
+      process.env.REALTIME_GRACE_WARNING_BEFORE_END_SECONDS,
+      300
+    ),
+  },
+
   // Alerting
   alerts: {
     enabled: parseBoolean(process.env.ALERTS_ENABLED, true),

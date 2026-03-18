@@ -481,6 +481,180 @@ async function handleFunctionCall(
   }
 }
 
+const GRACE_WARNING_TEXT = (
+  sessionLimitSeconds: number,
+  graceWarningBeforeEndSeconds: number
+): string => [
+  `Realtime session warning: this call is in the final ${graceWarningBeforeEndSeconds} seconds before the ${sessionLimitSeconds}-second session limit.`,
+  'Tell the caller now that the call will end very soon because of the session limit.',
+  'Wrap up naturally and end the call gracefully using normal behavior and tools.',
+].join('\n');
+
+interface GraceWarningController {
+  schedule: () => void;
+  maybeDispatch: () => void;
+  clearTimer: (reason: string) => void;
+}
+
+function createGraceWarningController(params: {
+  getOpenAIWs: () => WebSocket | null;
+  getTwilioCallSid: () => string | null;
+  isAssistantBusy: () => boolean;
+}): GraceWarningController {
+  let graceWarningTimer: NodeJS.Timeout | null = null;
+  let graceWarningSent = false;
+  let graceWarningPending = false;
+  let graceWarningDispatchInFlight = false;
+
+  const clearTimer = (reason: string): void => {
+    if (!graceWarningTimer) {
+      return;
+    }
+
+    clearTimeout(graceWarningTimer);
+    graceWarningTimer = null;
+
+    logger.info('Grace warning timer cleared', {
+      twilioCallSid: params.getTwilioCallSid() ?? 'unknown',
+      reason,
+    });
+  };
+
+  const maybeDispatch = (): void => {
+    if (graceWarningSent || !graceWarningPending || graceWarningDispatchInFlight) {
+      return;
+    }
+
+    const twilioCallSid = params.getTwilioCallSid() ?? 'unknown';
+    const ws = params.getOpenAIWs();
+
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      logger.warn('Grace warning pending but OpenAI WebSocket is not open', {
+        twilioCallSid,
+        readyState: ws?.readyState,
+      });
+      graceWarningPending = false;
+      return;
+    }
+
+    if (params.isAssistantBusy()) {
+      logger.info('Grace warning deferred until assistant playback completes', {
+        twilioCallSid,
+      });
+      return;
+    }
+
+    graceWarningDispatchInFlight = true;
+
+    const sessionLimitSeconds = config.realtime.sessionLimitSeconds;
+    const graceWarningBeforeEndSeconds = config.realtime.graceWarningBeforeEndSeconds;
+    const text = GRACE_WARNING_TEXT(
+      sessionLimitSeconds,
+      graceWarningBeforeEndSeconds
+    );
+
+    const itemCreate = {
+      type: 'conversation.item.create',
+      item: {
+        type: 'message',
+        role: 'user',
+        content: [
+          {
+            type: 'input_text',
+            text,
+          },
+        ],
+      },
+    };
+
+    const responseCreate = {
+      type: 'response.create',
+    };
+
+    ws.send(JSON.stringify(itemCreate), (itemError) => {
+      if (itemError) {
+        graceWarningDispatchInFlight = false;
+        graceWarningPending = false;
+        logger.error('Failed to send grace warning conversation item', {
+          twilioCallSid,
+          error: itemError,
+        });
+        return;
+      }
+
+      ws.send(JSON.stringify(responseCreate), (responseError) => {
+        graceWarningDispatchInFlight = false;
+
+        if (responseError) {
+          graceWarningPending = false;
+          logger.error('Failed to send response.create for grace warning', {
+            twilioCallSid,
+            error: responseError,
+          });
+          return;
+        }
+
+        graceWarningSent = true;
+        graceWarningPending = false;
+
+        logger.info('Grace warning dispatched', {
+          twilioCallSid,
+        });
+      });
+    });
+  };
+
+  const schedule = (): void => {
+    if (
+      graceWarningSent ||
+      graceWarningPending ||
+      graceWarningDispatchInFlight ||
+      graceWarningTimer
+    ) {
+      return;
+    }
+
+    const sessionLimitSeconds = config.realtime.sessionLimitSeconds;
+    const graceWarningBeforeEndSeconds = config.realtime.graceWarningBeforeEndSeconds;
+    const twilioCallSid = params.getTwilioCallSid() ?? 'unknown';
+
+    if (graceWarningBeforeEndSeconds >= sessionLimitSeconds) {
+      logger.warn('Grace warning timer skipped due to invalid realtime timeout config', {
+        twilioCallSid,
+        sessionLimitSeconds,
+        graceWarningBeforeEndSeconds,
+      });
+      return;
+    }
+
+    const fireInSeconds = sessionLimitSeconds - graceWarningBeforeEndSeconds;
+
+    logger.info('Grace warning timer scheduled', {
+      twilioCallSid,
+      sessionLimitSeconds,
+      graceWarningBeforeEndSeconds,
+      fireInSeconds,
+    });
+
+    graceWarningTimer = setTimeout(() => {
+      graceWarningTimer = null;
+      graceWarningPending = true;
+
+      logger.info('Grace warning timer fired', {
+        twilioCallSid: params.getTwilioCallSid() ?? 'unknown',
+      });
+
+      maybeDispatch();
+    }, fireInSeconds * 1000);
+  };
+
+  return {
+    schedule,
+    maybeDispatch,
+    clearTimer,
+  };
+}
+
 export class MediaStreamHandler {
   /**
    * Handle WebSocket connection for media streaming
@@ -579,6 +753,15 @@ export class MediaStreamHandler {
         }
       }, IDLE_TIMEOUT_MS);
     };
+
+    const graceWarning = createGraceWarningController({
+      getOpenAIWs: () => openaiWs,
+      getTwilioCallSid: () => twilioCallSid,
+      isAssistantBusy: () =>
+        Boolean(lastAssistantItem) ||
+        markQueue.length > 0 ||
+        audioPlayout.getBufferLength() > 0,
+    });
 
     const triggerInitialAssistantResponse = (): void => {
       if (
@@ -847,6 +1030,7 @@ export class MediaStreamHandler {
           logger.info('Session updated, ready for initial response');
           openaiReadyForInitialResponse = true;
           triggerInitialAssistantResponse();
+          graceWarning.schedule();
         }
 
         // Extract conversation ID from session.created
@@ -938,6 +1122,7 @@ export class MediaStreamHandler {
     });
 
     openaiWs.on('close', (code, reason) => {
+      graceWarning.clearTimer('openai_ws_closed');
       logger.info('OpenAI WebSocket closed', {
         code,
         reason: reason?.toString('utf8') || '',
@@ -1008,11 +1193,14 @@ export class MediaStreamHandler {
               lastAssistantItem = null;
               responseStartTimestamp = null;
               responseAudioDone = false;
+
+              graceWarning.maybeDispatch();
             }
             break;
 
           case 'stop':
             logger.info('Twilio stream stopped', { streamSid });
+            graceWarning.clearTimer('twilio_stream_stopped');
             audioPlayout.dispose();
             await handleCallEnd(
               twilioCallSid,
@@ -1041,6 +1229,7 @@ export class MediaStreamHandler {
     twilioWs.on('close', async () => {
       logger.info('Twilio WebSocket closed');
       stopIdleTimer();
+      graceWarning.clearTimer('twilio_ws_closed');
       audioPlayout.dispose();
       
       // Ensure OpenAI connection is closed
@@ -1145,6 +1334,15 @@ export class MediaStreamHandler {
         }
       }, IDLE_TIMEOUT_MS);
     };
+
+    const graceWarning = createGraceWarningController({
+      getOpenAIWs: () => openaiWs,
+      getTwilioCallSid: () => twilioCallSid,
+      isAssistantBusy: () =>
+        Boolean(lastAssistantItem) ||
+        markQueue.length > 0 ||
+        audioPlayout.getBufferLength() > 0,
+    });
 
     const triggerInitialAssistantResponse = (): void => {
       if (
@@ -1413,6 +1611,7 @@ export class MediaStreamHandler {
             logger.info('Session updated, ready for initial response (lazy)');
             openaiReadyForInitialResponse = true;
             triggerInitialAssistantResponse();
+            graceWarning.schedule();
           }
 
           if (event.type === 'session.created') {
@@ -1487,6 +1686,7 @@ export class MediaStreamHandler {
       });
 
       ws.on('close', (code, reason) => {
+        graceWarning.clearTimer('openai_ws_closed');
         logger.info('OpenAI WebSocket closed', {
           code,
           reason: reason?.toString('utf8') || '',
@@ -1648,11 +1848,14 @@ export class MediaStreamHandler {
               lastAssistantItem = null;
               responseStartTimestamp = null;
               responseAudioDone = false;
+
+              graceWarning.maybeDispatch();
             }
             break;
           }
           case 'stop': {
             logger.info('Twilio stream stopped', { streamSid });
+            graceWarning.clearTimer('twilio_stream_stopped');
             audioPlayout.dispose();
             if (twilioCallSid && callConfig) {
               await handleCallEnd(
@@ -1682,6 +1885,7 @@ export class MediaStreamHandler {
     twilioWs.on('close', async () => {
       logger.info('Twilio WebSocket closed');
       stopIdleTimer();
+      graceWarning.clearTimer('twilio_ws_closed');
       audioPlayout.dispose();
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
         openaiWs.close();
