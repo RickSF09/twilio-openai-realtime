@@ -164,14 +164,16 @@ export class OpenAIRealtimeService {
     itemId: string,
     elapsedTimeMs: number
   ): Promise<void> {
+    const safeElapsedTimeMs = Math.max(0, Math.floor(elapsedTimeMs));
+
     const truncateEvent = {
       type: 'conversation.item.truncate',
       item_id: itemId,
       content_index: 0,
-      audio_end_ms: elapsedTimeMs,
+      audio_end_ms: safeElapsedTimeMs,
     };
 
-    logger.debug('Sending truncate event', { itemId, elapsedTimeMs });
+    logger.debug('Sending truncate event', { itemId, elapsedTimeMs: safeElapsedTimeMs });
 
     return new Promise((resolve, reject) => {
       if (ws.readyState === WebSocket.OPEN) {

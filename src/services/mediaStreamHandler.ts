@@ -40,6 +40,7 @@ class TwilioAudioPlayout {
   private disposed = false;
   private streamingStarted = false;
   private nextSendTime: number | null = null;
+  private totalSentMs = 0;
   public onDrained: (() => void) | null = null;
 
   private static readonly FRAME_DURATION_MS = 20;
@@ -51,7 +52,7 @@ class TwilioAudioPlayout {
   constructor(
     private readonly ws: WebSocket,
     private readonly streamSidGetter: () => string | null,
-    private readonly markQueue: string[],
+    private readonly markQueue: number[],
   ) {}
 
   enqueue(base64Payload: string): void {
@@ -100,6 +101,10 @@ class TwilioAudioPlayout {
 
   getBufferLength(): number {
     return this.buffer.length;
+  }
+
+  getTotalSentMs(): number {
+    return this.totalSentMs;
   }
 
   private startTimerIfReady(force: boolean): void {
@@ -197,6 +202,7 @@ class TwilioAudioPlayout {
       streamSid,
       media: { payload },
     }));
+    this.totalSentMs += TwilioAudioPlayout.FRAME_DURATION_MS;
     this.maybeSendMark(streamSid);
 
     if (this.pendingDrain) {
@@ -217,7 +223,7 @@ class TwilioAudioPlayout {
     }
 
     this.lastMarkSent = now;
-    void sendMark(this.ws, streamSid, this.markQueue);
+    void sendMark(this.ws, streamSid, this.markQueue, this.totalSentMs);
   }
 
   private stopIfDrained(): void {
@@ -243,6 +249,16 @@ class TwilioAudioPlayout {
 }
 
 type UsageCategory = 'responses' | 'transcriptions';
+
+function getPcmuDurationMsFromBase64(base64Payload: string): number {
+  const decodedBytes = Buffer.byteLength(base64Payload, 'base64');
+  if (!Number.isFinite(decodedBytes) || decodedBytes <= 0) {
+    return 0;
+  }
+
+  // PCMU at 8 kHz is 8 bytes per millisecond.
+  return Math.max(0, Math.round(decodedBytes / 8));
+}
 
 interface FunctionCallState {
   name?: string;
@@ -688,11 +704,11 @@ export class MediaStreamHandler {
 
     // Connection state
     let streamSid: string | null = null;
-    let latestMediaTimestamp = 0;
     let lastAssistantItem: string | null = null;
-    let responseStartTimestamp: number | null = null;
+    let responseStartPlayoutMs: number | null = null;
+    let responseGeneratedAudioMs = 0;
     let responseAudioDone = false; // Tracks if OpenAI finished generating audio (but may still be playing)
-    const markQueue: string[] = [];
+    const markQueue: number[] = [];
     const executedFunctionCalls: ToolCallPayload[] = [];
     const pendingFunctionCalls = new Map<string, FunctionCallState>();
     const audioPlayout = new TwilioAudioPlayout(
@@ -1047,9 +1063,12 @@ export class MediaStreamHandler {
         if (event.type === 'response.output_audio.delta' && event.delta) {
           stopIdleTimer();
           audioPlayout.enqueue(event.delta);
+          responseGeneratedAudioMs += getPcmuDurationMsFromBase64(event.delta);
 
           if (event.item_id && event.item_id !== lastAssistantItem) {
-            responseStartTimestamp = latestMediaTimestamp;
+            responseStartPlayoutMs = audioPlayout.getTotalSentMs();
+            responseGeneratedAudioMs = getPcmuDurationMsFromBase64(event.delta);
+            responseAudioDone = false;
             lastAssistantItem = event.item_id;
           }
         }
@@ -1063,47 +1082,94 @@ export class MediaStreamHandler {
           // Send a final mark only when the audio buffer is fully drained
           audioPlayout.onDrained = () => {
             if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
-              void sendMark(twilioWs, streamSid, markQueue);
+              void sendMark(
+                twilioWs,
+                streamSid,
+                markQueue,
+                audioPlayout.getTotalSentMs()
+              );
             }
           };
           
           audioPlayout.notifyResponseFinished();
         }
 
-        // Handle interruption (only if response is still in progress)
+        // Handle user barge-in by stopping local playout and truncating unplayed assistant audio.
         if (event.type === 'input_audio_buffer.speech_started') {
           stopIdleTimer();
           nudgeCount = 0;
-          const interruptionData = {lastAssistantItem,responseStartTimestamp,responseAudioDone,markQueueLength:markQueue.length};
-          logger.info('INTERRUPTION_RECEIVED', interruptionData);
-          logger.debug('User speech started - handling interruption');
+          logger.debug('User speech started');
           
-          if (lastAssistantItem && responseStartTimestamp !== null) {
-            const elapsedTime = latestMediaTimestamp - responseStartTimestamp;
+          if (lastAssistantItem && responseStartPlayoutMs !== null) {
+            const sentSinceResponseStartMs = Math.max(
+              0,
+              audioPlayout.getTotalSentMs() - responseStartPlayoutMs
+            );
+            const elapsedTime = Math.max(
+              0,
+              Math.min(sentSinceResponseStartMs, responseGeneratedAudioMs)
+            );
+            const playoutBufferLength = audioPlayout.getBufferLength();
+            const hasBufferedAssistantAudio =
+              markQueue.length > 0 || playoutBufferLength > 0;
+            const hasGeneratedButUnplayedAudio =
+              responseGeneratedAudioMs > elapsedTime + 20;
+            const hasPotentialUnplayedAudio =
+              hasBufferedAssistantAudio || hasGeneratedButUnplayedAudio;
 
-            // 1. Always stop playback immediately
-            if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
-              twilioWs.send(JSON.stringify({
-                event: 'clear',
-                streamSid,
-              }));
-            }
-
-            audioPlayout.reset();
-            
-            // 2. Only truncate if the AI is still generating audio (not yet done)
-            if (!responseAudioDone) {
-              await openaiService.handleInterruption(
-                openaiWs,
+            // 2. Truncate whenever there is potentially unplayed assistant audio.
+            if (hasPotentialUnplayedAudio) {
+              const interruptionData = {
                 lastAssistantItem,
-                elapsedTime
-              );
+                responseStartPlayoutMs,
+                responseGeneratedAudioMs,
+                elapsedTime,
+                responseAudioDone,
+                markQueueLength: markQueue.length,
+                playoutBufferLength,
+                hasBufferedAssistantAudio,
+                hasGeneratedButUnplayedAudio,
+              };
+              logger.info('INTERRUPTION_RECEIVED', interruptionData);
+
+              // Always stop playback immediately when we have unplayed assistant audio.
+              if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
+                twilioWs.send(JSON.stringify({
+                  event: 'clear',
+                  streamSid,
+                }));
+              }
+
+              audioPlayout.reset();
+
+              try {
+                await openaiService.handleInterruption(
+                  openaiWs,
+                  lastAssistantItem,
+                  elapsedTime
+                );
+              } catch (truncateError) {
+                logger.warn('Failed to truncate interrupted assistant audio', {
+                  error: truncateError,
+                  twilioCallSid,
+                  itemId: lastAssistantItem,
+                  elapsedTime,
+                });
+              }
+            } else {
+              logger.debug('User speech started with no unplayed assistant audio; skipping truncate', {
+                lastAssistantItem,
+                responseGeneratedAudioMs,
+                elapsedTime,
+                responseAudioDone,
+              });
             }
 
             // 3. Reset state
             markQueue.length = 0;
             lastAssistantItem = null;
-            responseStartTimestamp = null;
+            responseStartPlayoutMs = null;
+            responseGeneratedAudioMs = 0;
             responseAudioDone = false;
           }
         }
@@ -1167,7 +1233,6 @@ export class MediaStreamHandler {
 
           case 'media':
             if (message.media && openaiWs.readyState === WebSocket.OPEN) {
-              latestMediaTimestamp = parseInt(message.media.timestamp, 10);
               openaiService.sendAudio(openaiWs, message.media.payload);
             }
             break;
@@ -1191,7 +1256,8 @@ export class MediaStreamHandler {
               
               // NOW reset the tracking state
               lastAssistantItem = null;
-              responseStartTimestamp = null;
+              responseStartPlayoutMs = null;
+              responseGeneratedAudioMs = 0;
               responseAudioDone = false;
 
               graceWarning.maybeDispatch();
@@ -1267,11 +1333,11 @@ export class MediaStreamHandler {
     let to: string | undefined;
 
     let openaiWs: WebSocket | null = null;
-    let latestMediaTimestamp = 0;
     let lastAssistantItem: string | null = null;
-    let responseStartTimestamp: number | null = null;
+    let responseStartPlayoutMs: number | null = null;
+    let responseGeneratedAudioMs = 0;
     let responseAudioDone = false; // Tracks if OpenAI finished generating audio (but may still be playing)
-    const markQueue: string[] = [];
+    const markQueue: number[] = [];
     let initialized = false;
     const executedFunctionCalls: ToolCallPayload[] = [];
     const pendingFunctionCalls = new Map<string, FunctionCallState>();
@@ -1625,8 +1691,11 @@ export class MediaStreamHandler {
           if (event.type === 'response.output_audio.delta' && event.delta) {
             stopIdleTimer();
             audioPlayout.enqueue(event.delta);
+            responseGeneratedAudioMs += getPcmuDurationMsFromBase64(event.delta);
             if (event.item_id && event.item_id !== lastAssistantItem) {
-              responseStartTimestamp = latestMediaTimestamp;
+              responseStartPlayoutMs = audioPlayout.getTotalSentMs();
+              responseGeneratedAudioMs = getPcmuDurationMsFromBase64(event.delta);
+              responseAudioDone = false;
               lastAssistantItem = event.item_id;
             }
           }
@@ -1639,7 +1708,12 @@ export class MediaStreamHandler {
             // Send a final mark only when the audio buffer is fully drained
             audioPlayout.onDrained = () => {
               if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
-                void sendMark(twilioWs, streamSid, markQueue);
+                void sendMark(
+                  twilioWs,
+                  streamSid,
+                  markQueue,
+                  audioPlayout.getTotalSentMs()
+                );
               }
             };
             
@@ -1648,28 +1722,70 @@ export class MediaStreamHandler {
           if (event.type === 'input_audio_buffer.speech_started') {
             stopIdleTimer();
             nudgeCount = 0;
-            const interruptionData = {lastAssistantItem,responseStartTimestamp,responseAudioDone,markQueueLength:markQueue.length};
-            logger.info('INTERRUPTION_RECEIVED (lazy)', interruptionData);
-            logger.debug('User speech started - handling interruption');
-            if (lastAssistantItem && responseStartTimestamp !== null) {
-              const elapsedTime = latestMediaTimestamp - responseStartTimestamp;
+            logger.debug('User speech started - handling interruption (lazy)');
+            if (lastAssistantItem && responseStartPlayoutMs !== null) {
+              const sentSinceResponseStartMs = Math.max(
+                0,
+                audioPlayout.getTotalSentMs() - responseStartPlayoutMs
+              );
+              const elapsedTime = Math.max(
+                0,
+                Math.min(sentSinceResponseStartMs, responseGeneratedAudioMs)
+              );
+              const playoutBufferLength = audioPlayout.getBufferLength();
+              const hasBufferedAssistantAudio =
+                markQueue.length > 0 || playoutBufferLength > 0;
+              const hasGeneratedButUnplayedAudio =
+                responseGeneratedAudioMs > elapsedTime + 20;
+              const hasPotentialUnplayedAudio =
+                hasBufferedAssistantAudio || hasGeneratedButUnplayedAudio;
 
-              if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
-                twilioWs.send(JSON.stringify({ event: 'clear', streamSid }));
-              }
-              audioPlayout.reset();
-
-              if (!responseAudioDone) {
-                await openaiService.handleInterruption(
-                  ws,
+              if (hasPotentialUnplayedAudio) {
+                const interruptionData = {
                   lastAssistantItem,
-                  elapsedTime
-                );
+                  responseStartPlayoutMs,
+                  responseGeneratedAudioMs,
+                  elapsedTime,
+                  responseAudioDone,
+                  markQueueLength: markQueue.length,
+                  playoutBufferLength,
+                  hasBufferedAssistantAudio,
+                  hasGeneratedButUnplayedAudio,
+                };
+                logger.info('INTERRUPTION_RECEIVED (lazy)', interruptionData);
+
+                if (streamSid && twilioWs.readyState === WebSocket.OPEN) {
+                  twilioWs.send(JSON.stringify({ event: 'clear', streamSid }));
+                }
+                audioPlayout.reset();
+
+                try {
+                  await openaiService.handleInterruption(
+                    ws,
+                    lastAssistantItem,
+                    elapsedTime
+                  );
+                } catch (truncateError) {
+                  logger.warn('Failed to truncate interrupted assistant audio (lazy)', {
+                    error: truncateError,
+                    twilioCallSid,
+                    itemId: lastAssistantItem,
+                    elapsedTime,
+                  });
+                }
+              } else {
+                logger.debug('User speech started with no unplayed assistant audio; skipping truncate (lazy)', {
+                  lastAssistantItem,
+                  responseGeneratedAudioMs,
+                  elapsedTime,
+                  responseAudioDone,
+                });
               }
 
               markQueue.length = 0;
               lastAssistantItem = null;
-              responseStartTimestamp = null;
+              responseStartPlayoutMs = null;
+              responseGeneratedAudioMs = 0;
               responseAudioDone = false;
             }
           }
@@ -1825,7 +1941,6 @@ export class MediaStreamHandler {
               return;
             }
             if (message.media) {
-              latestMediaTimestamp = parseInt(message.media.timestamp, 10);
               openaiService.sendAudio(openaiWs!, message.media.payload);
             }
             break;
@@ -1846,7 +1961,8 @@ export class MediaStreamHandler {
               
               // NOW reset the tracking state
               lastAssistantItem = null;
-              responseStartTimestamp = null;
+              responseStartPlayoutMs = null;
+              responseGeneratedAudioMs = 0;
               responseAudioDone = false;
 
               graceWarning.maybeDispatch();
@@ -1910,7 +2026,8 @@ export class MediaStreamHandler {
 async function sendMark(
   ws: WebSocket,
   streamSid: string,
-  markQueue: string[]
+  markQueue: number[],
+  playbackMs: number
 ): Promise<void> {
   if (ws.readyState === WebSocket.OPEN) {
     const markEvent = {
@@ -1919,7 +2036,7 @@ async function sendMark(
       mark: { name: 'responsePart' },
     };
     ws.send(JSON.stringify(markEvent));
-    markQueue.push('responsePart');
+    markQueue.push(playbackMs);
   }
 }
 
